@@ -320,6 +320,11 @@ def ingest_from_gmail(
             if message_had_processable_attachment and not config.dry_run:
                 if _move_message(imap, raw_msg_id, config.processed_mailbox):
                     messages_moved += 1
+                else:
+                    log.warning(
+                        "Failed to move message to %s (message-id=%s); leaving unread for retry",
+                        config.processed_mailbox, message_id,
+                    )
 
         if not config.dry_run:
             imap.expunge()

@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 
-from .charts import generate_exercise_progress_chart
+from .charts import generate_all_exercises_page, generate_exercise_progress_chart
 from .db import connect, init_db
 from .email_ingest import EmailIngestConfig, ingest_from_gmail
 from .ingest import ingest_csv
@@ -30,6 +30,11 @@ def _build_parser() -> argparse.ArgumentParser:
     plot_parser.add_argument("--output", required=True, help="Output HTML file path")
     plot_parser.add_argument("--start", help="Start date filter (YYYY-MM-DD)")
     plot_parser.add_argument("--end", help="End date filter (YYYY-MM-DD)")
+
+    plot_all_parser = subparsers.add_parser("plot-all", help="Generate single page with all exercises in a dropdown")
+    plot_all_parser.add_argument("--output", default="output/index.html", help="Output HTML file path")
+    plot_all_parser.add_argument("--start", help="Start date filter (YYYY-MM-DD)")
+    plot_all_parser.add_argument("--end", help="End date filter (YYYY-MM-DD)")
 
     email_parser = subparsers.add_parser("ingest-email", help="Ingest Strong CSV attachments from Gmail")
     email_parser.add_argument("--imap-host", default="imap.gmail.com", help="IMAP host")
@@ -123,6 +128,16 @@ def main() -> int:
             end_date=args.end,
         )
         print(f"Chart generated with {points} points at {args.output}")
+        return 0
+
+    if args.command == "plot-all":
+        count = generate_all_exercises_page(
+            connection,
+            output_path=args.output,
+            start_date=args.start,
+            end_date=args.end,
+        )
+        print(f"Generated page with {count} exercises at {args.output}")
         return 0
 
     if args.command == "ingest-email":
