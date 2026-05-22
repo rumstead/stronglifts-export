@@ -81,7 +81,10 @@ def _parse_float(value: str) -> float | None:
     value = value.strip()
     if not value:
         return None
-    return float(value)
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def _estimate_1rm(weight: float | None, reps: int | None) -> float | None:

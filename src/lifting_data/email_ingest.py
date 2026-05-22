@@ -258,7 +258,10 @@ def ingest_from_gmail(
             imap.close()
         except Exception:
             pass
-        imap.logout()
+        try:
+            imap.logout()
+        except Exception:
+            pass
 
     return EmailIngestResult(
         messages_seen=messages_seen,
