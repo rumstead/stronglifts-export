@@ -259,10 +259,10 @@ def generate_all_exercises_page(
         xaxis: {{ title: 'Workout Date' }},
         yaxis: {{ title: 'Weight / Estimated 1RM', side: 'left' }},
         yaxis2: {{ title: 'Volume', side: 'right', overlaying: 'y' }},
-        legend: {{ title: {{ text: 'Metrics' }} }},
+        legend: {{ x: 0.01, y: 0.99, xanchor: 'left', yanchor: 'top' }},
         template: 'plotly_white',
         dragmode: 'pan',
-        margin: {{ t: 50, b: 50 }}
+        margin: {{ t: 50, b: 50, r: 80 }}
       }};
 
       var config = {{
