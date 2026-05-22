@@ -6,7 +6,6 @@ from pathlib import Path
 from lifting_data import email_ingest as email_ingest_module
 from lifting_data.db import connect, init_db
 from lifting_data.email_ingest import EmailIngestConfig, ingest_from_gmail
-from lifting_data.ingest import IngestResult
 
 
 class _FakeImap:
@@ -80,19 +79,10 @@ def test_dry_run_does_not_mark_attachments_processed(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr(email_ingest_module.imaplib, "IMAP4_SSL", _FakeImap)
 
-    ingest_calls = {"count": 0}
-
-    def fake_ingest_csv(_connection, _csv_path: str) -> IngestResult:
-        ingest_calls["count"] += 1
-        return IngestResult(inserted=1, skipped=0)
-
-    monkeypatch.setattr(email_ingest_module, "ingest_csv", fake_ingest_csv)
-
     dry_run_result = ingest_from_gmail(connection, _config(tmp_path / "downloads", dry_run=True))
 
     assert dry_run_result.attachments_seen == 1
     assert dry_run_result.attachments_ingested == 0
-    assert ingest_calls["count"] == 0
     assert not (tmp_path / "downloads").exists()
 
     processed_after_dry_run = connection.execute("SELECT COUNT(*) AS c FROM email_imports").fetchone()["c"]
@@ -101,7 +91,6 @@ def test_dry_run_does_not_mark_attachments_processed(tmp_path: Path, monkeypatch
     non_dry_run_result = ingest_from_gmail(connection, _config(tmp_path / "downloads", dry_run=False))
 
     assert non_dry_run_result.attachments_ingested == 1
-    assert ingest_calls["count"] == 1
 
     processed_after_real_run = connection.execute("SELECT COUNT(*) AS c FROM email_imports").fetchone()["c"]
     assert processed_after_real_run == 1

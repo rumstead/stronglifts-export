@@ -93,17 +93,22 @@ def _estimate_1rm(weight: float | None, reps: int | None) -> float | None:
     return weight * (1 + reps / 30.0)
 
 
-def _build_dedupe_key(row: dict[str, str]) -> str:
+def _cell(row: dict[str, str | None], key: str) -> str:
+    """Return a stripped string, treating missing/None cells as empty."""
+    return (row.get(key) or "").strip()
+
+
+def _build_dedupe_key(row: dict[str, str | None]) -> str:
     key_fields = [
-        row.get("Date", "").strip(),
-        row.get("Workout Name", "").strip(),
-        row.get("Exercise Name", "").strip(),
-        row.get("Set Order", "").strip(),
-        row.get("Weight", "").strip(),
-        row.get("Reps", "").strip(),
-        row.get("Distance", "").strip(),
-        row.get("Seconds", "").strip(),
-        row.get("RPE", "").strip(),
+        _cell(row, "Date"),
+        _cell(row, "Workout Name"),
+        _cell(row, "Exercise Name"),
+        _cell(row, "Set Order"),
+        _cell(row, "Weight"),
+        _cell(row, "Reps"),
+        _cell(row, "Distance"),
+        _cell(row, "Seconds"),
+        _cell(row, "RPE"),
     ]
     payload = "|".join(key_fields)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -120,20 +125,27 @@ def parse_strong_csv(csv_path: str) -> Iterable[StrongSet]:
             raise ValueError(f"Missing required columns: {missing_list}")
 
         for row in reader:
-            weight = _parse_float(row["Weight"])
-            reps = _parse_int(row["Reps"])
+            workout_date = _cell(row, "Date")
+            workout_name = _cell(row, "Workout Name")
+            exercise_name = _cell(row, "Exercise Name")
+            if not workout_date or not workout_name or not exercise_name:
+                raise ValueError(
+                    f"Row is missing required string fields: {dict(row)!r}"
+                )
+            weight = _parse_float(_cell(row, "Weight"))
+            reps = _parse_int(_cell(row, "Reps"))
             volume = weight * reps if weight is not None and reps is not None else None
             yield StrongSet(
-                workout_date=row["Date"].strip(),
-                workout_name=row["Workout Name"].strip(),
-                duration_seconds=_parse_duration_seconds(row["Duration"]),
-                exercise_name=row["Exercise Name"].strip(),
-                set_order=_parse_int(row["Set Order"]) or 0,
+                workout_date=workout_date,
+                workout_name=workout_name,
+                duration_seconds=_parse_duration_seconds(_cell(row, "Duration")),
+                exercise_name=exercise_name,
+                set_order=_parse_int(_cell(row, "Set Order")) or 0,
                 weight=weight,
                 reps=reps,
-                distance=_parse_float(row["Distance"]),
-                seconds=_parse_float(row["Seconds"]),
-                rpe=_parse_float(row["RPE"]),
+                distance=_parse_float(_cell(row, "Distance")),
+                seconds=_parse_float(_cell(row, "Seconds")),
+                rpe=_parse_float(_cell(row, "RPE")),
                 volume=volume,
                 estimated_1rm=_estimate_1rm(weight, reps),
                 dedupe_key=_build_dedupe_key(row),

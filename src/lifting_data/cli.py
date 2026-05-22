@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sqlite3
 
@@ -76,6 +77,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -146,9 +149,12 @@ def main() -> int:
         print(
             "Email ingest complete: "
             f"messages_seen={result.messages_seen}, "
+            f"messages_rejected_sender={result.messages_rejected_sender}, "
+            f"messages_rejected_subject={result.messages_rejected_subject}, "
             f"attachments_seen={result.attachments_seen}, "
             f"attachments_ingested={result.attachments_ingested}, "
             f"attachments_skipped={result.attachments_skipped}, "
+            f"attachments_invalid={result.attachments_invalid}, "
             f"sets_inserted={result.sets_inserted}, "
             f"sets_skipped={result.sets_skipped}, "
             f"messages_moved={result.messages_moved}"
