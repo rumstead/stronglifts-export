@@ -222,21 +222,22 @@ def ingest_from_gmail(
                     inserted = ingest_result.inserted
                     skipped = ingest_result.skipped
 
-                record_processed_email_attachment(
-                    connection,
-                    message_id=message_id,
-                    sender_email=sender_email,
-                    subject=subject,
-                    attachment_name=safe_name,
-                    file_hash=file_hash,
-                    source_mailbox=config.source_mailbox,
-                    inserted_sets=inserted,
-                    skipped_sets=skipped,
-                )
+                if not config.dry_run:
+                    record_processed_email_attachment(
+                        connection,
+                        message_id=message_id,
+                        sender_email=sender_email,
+                        subject=subject,
+                        attachment_name=safe_name,
+                        file_hash=file_hash,
+                        source_mailbox=config.source_mailbox,
+                        inserted_sets=inserted,
+                        skipped_sets=skipped,
+                    )
 
-                attachments_ingested += 1
-                sets_inserted += inserted
-                sets_skipped += skipped
+                    attachments_ingested += 1
+                    sets_inserted += inserted
+                    sets_skipped += skipped
                 message_had_processable_attachment = True
 
             if message_had_processable_attachment and not config.dry_run:

@@ -60,7 +60,12 @@ def ingest_csv(connection: sqlite3.Connection, csv_path: str) -> IngestResult:
                     ),
                 )
                 inserted += 1
-            except sqlite3.IntegrityError:
-                skipped += 1
+            except sqlite3.IntegrityError as exc:
+                error = str(exc).lower()
+                is_dedupe_conflict = "unique" in error and "sets.dedupe_key" in error
+                if is_dedupe_conflict:
+                    skipped += 1
+                    continue
+                raise
 
     return IngestResult(inserted=inserted, skipped=skipped)

@@ -7,39 +7,6 @@ Strong exports CSV, but does not provide reliable unattended sync from iPhone. T
 
 ## Setup
 1. Create and activate a virtual environment.
-2. Install dependencies:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
-```
- 
-Why no `PYTHONPATH=src`: this project now uses editable install (`pip install -e .`), so the package resolves directly from your venv.
-```
-
-## Commands
-Initialize database:
-
-```bash
-python3 -m lifting_data.cli --db data/lifts.db init-db
-```
-
-Ingest a Strong CSV export:
-
-```bash
-python3 -m lifting_data.cli --db data/lifts.db ingest --csv path/to/strong-export.csv
-```
-# Strong CSV Lift Tracking
-
-This project ingests CSV exports from Strong, stores deduplicated set history in SQLite, and generates exercise progress charts as HTML files.
-
-## Why this workflow
-Strong exports CSV, but does not provide reliable unattended sync from iPhone. This pipeline assumes manual export from the app and automates everything after that.
-
-## Setup
-1. Create and activate a virtual environment.
 2. Install dependencies and the project in editable mode.
 
 ```bash

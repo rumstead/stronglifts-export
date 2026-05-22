@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from lifting_data.db import connect, init_db
+from lifting_data import ingest as ingest_module
 from lifting_data.ingest import ingest_csv
 from lifting_data.strong_csv import _parse_duration_seconds, parse_strong_csv
 
@@ -68,3 +73,50 @@ def test_parse_strong_csv_tolerates_non_numeric_set_order(tmp_path: Path) -> Non
     assert len(rows) == 1
     assert rows[0].set_order == 0
     assert rows[0].duration_seconds == 2880
+
+
+def test_ingest_reraises_non_dedupe_integrity_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    @dataclass(frozen=True)
+    class FakeSet:
+        workout_date: str
+        workout_name: str | None
+        duration_seconds: int
+        exercise_name: str
+        set_order: int
+        weight: float
+        reps: int
+        distance: float | None
+        seconds: float | None
+        rpe: float | None
+        volume: float
+        estimated_1rm: float
+        dedupe_key: str
+
+    def fake_parse_strong_csv(_csv_path: str):
+        yield FakeSet(
+            workout_date="2026-05-01",
+            workout_name=None,
+            duration_seconds=3600,
+            exercise_name="Bench Press",
+            set_order=1,
+            weight=100.0,
+            reps=5,
+            distance=None,
+            seconds=None,
+            rpe=8.0,
+            volume=500.0,
+            estimated_1rm=112.5,
+            dedupe_key="bad-row",
+        )
+
+    monkeypatch.setattr(ingest_module, "parse_strong_csv", fake_parse_strong_csv)
+
+    db_path = tmp_path / "lifts.db"
+    connection = connect(str(db_path))
+    init_db(connection)
+
+    csv_path = tmp_path / "unused.csv"
+    csv_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        ingest_module.ingest_csv(connection, str(csv_path))
