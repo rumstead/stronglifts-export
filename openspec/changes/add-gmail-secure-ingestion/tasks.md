@@ -19,5 +19,5 @@
 
 ## 4. Validation Plan
 - [x] 4.1 Validate OpenSpec change with strict mode.
-- [ ] 4.2 Run end-to-end test with a real emailed Strong CSV attachment.
+- [x] 4.2 Run end-to-end test with a real emailed Strong CSV attachment.
 - [x] 4.3 Verify dedupe behavior across duplicate emails and duplicate attachments.
