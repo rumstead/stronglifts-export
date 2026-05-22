@@ -98,17 +98,34 @@ def _cell(row: dict[str, str | None], key: str) -> str:
     return (row.get(key) or "").strip()
 
 
-def _build_dedupe_key(row: dict[str, str | None]) -> str:
+def _canonical_num(value: int | float | None) -> str:
+    """Canonical string representation of a parsed numeric value."""
+    if value is None:
+        return ""
+    return repr(value)
+
+
+def _build_dedupe_key(
+    workout_date: str,
+    workout_name: str,
+    exercise_name: str,
+    set_order: int,
+    weight: float | None,
+    reps: int | None,
+    distance: float | None,
+    seconds: float | None,
+    rpe: float | None,
+) -> str:
     key_fields = [
-        _cell(row, "Date"),
-        _cell(row, "Workout Name"),
-        _cell(row, "Exercise Name"),
-        _cell(row, "Set Order"),
-        _cell(row, "Weight"),
-        _cell(row, "Reps"),
-        _cell(row, "Distance"),
-        _cell(row, "Seconds"),
-        _cell(row, "RPE"),
+        workout_date,
+        workout_name,
+        exercise_name,
+        str(set_order),
+        _canonical_num(weight),
+        _canonical_num(reps),
+        _canonical_num(distance),
+        _canonical_num(seconds),
+        _canonical_num(rpe),
     ]
     payload = "|".join(key_fields)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -132,21 +149,35 @@ def parse_strong_csv(csv_path: str) -> Iterable[StrongSet]:
                 raise ValueError(
                     f"Row is missing required string fields: {dict(row)!r}"
                 )
+            set_order = _parse_int(_cell(row, "Set Order")) or 0
             weight = _parse_float(_cell(row, "Weight"))
             reps = _parse_int(_cell(row, "Reps"))
+            distance = _parse_float(_cell(row, "Distance"))
+            seconds = _parse_float(_cell(row, "Seconds"))
+            rpe = _parse_float(_cell(row, "RPE"))
             volume = weight * reps if weight is not None and reps is not None else None
             yield StrongSet(
                 workout_date=workout_date,
                 workout_name=workout_name,
                 duration_seconds=_parse_duration_seconds(_cell(row, "Duration")),
                 exercise_name=exercise_name,
-                set_order=_parse_int(_cell(row, "Set Order")) or 0,
+                set_order=set_order,
                 weight=weight,
                 reps=reps,
-                distance=_parse_float(_cell(row, "Distance")),
-                seconds=_parse_float(_cell(row, "Seconds")),
-                rpe=_parse_float(_cell(row, "RPE")),
+                distance=distance,
+                seconds=seconds,
+                rpe=rpe,
                 volume=volume,
                 estimated_1rm=_estimate_1rm(weight, reps),
-                dedupe_key=_build_dedupe_key(row),
+                dedupe_key=_build_dedupe_key(
+                    workout_date=workout_date,
+                    workout_name=workout_name,
+                    exercise_name=exercise_name,
+                    set_order=set_order,
+                    weight=weight,
+                    reps=reps,
+                    distance=distance,
+                    seconds=seconds,
+                    rpe=rpe,
+                ),
             )
