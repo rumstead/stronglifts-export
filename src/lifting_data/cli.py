@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 
 from .charts import generate_exercise_progress_chart
 from .db import connect, init_db
@@ -78,8 +79,13 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    connection = connect(args.db)
-    init_db(connection)
+    if args.command == "ingest-email" and args.dry_run:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        init_db(connection)
+    else:
+        connection = connect(args.db)
+        init_db(connection)
 
     if args.command == "init-db":
         print(f"Initialized database at {args.db}")

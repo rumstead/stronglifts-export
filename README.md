@@ -81,12 +81,6 @@ Build and push with an explicit tag:
 make image-publish TAG=2026-05-19-1 IMAGE_REPO=ghcr.io/<your-github-user>/lifting-data CONTAINER_RUNTIME=podman
 ```
 
-Push a `latest` tag after building:
-
-```bash
-make image-tag-latest TAG=2026-05-19-1 IMAGE_REPO=ghcr.io/<your-github-user>/lifting-data CONTAINER_RUNTIME=podman
-```
-
 Run the CLI inside the container (example: initialize DB in a mounted data dir):
 
 ```bash
