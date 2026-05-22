@@ -273,13 +273,29 @@ def ingest_from_gmail(
                     message_had_processable_attachment = True
                     continue
 
-                inserted = 0
-                skipped = 0
+                try:
+                    _validate_csv_headers(payload)
+                except ValueError as exc:
+                    log.warning(
+                        "Attachment %r from %s failed validation: %s",
+                        safe_name, sender_email, exc,
+                    )
+                    attachments_invalid += 1
+                    message_had_processable_attachment = True
+                    continue
+
                 local_path = inbox_path / f"{file_hash[:12]}-{safe_name}"
                 local_path.write_bytes(payload)
-                ingest_result = ingest_csv(connection, str(local_path))
-                inserted = ingest_result.inserted
-                skipped = ingest_result.skipped
+                try:
+                    ingest_result = ingest_csv(connection, str(local_path))
+                except (ValueError, csv.Error) as exc:
+                    log.warning(
+                        "Attachment %r from %s failed to parse: %s",
+                        safe_name, sender_email, exc,
+                    )
+                    attachments_invalid += 1
+                    message_had_processable_attachment = True
+                    continue
 
                 record_processed_email_attachment(
                     connection,
@@ -289,16 +305,16 @@ def ingest_from_gmail(
                     attachment_name=safe_name,
                     file_hash=file_hash,
                     source_mailbox=config.source_mailbox,
-                    inserted_sets=inserted,
-                    skipped_sets=skipped,
+                    inserted_sets=ingest_result.inserted,
+                    skipped_sets=ingest_result.skipped,
                 )
                 log.info(
                     "Ingested %r from %s: inserted=%d skipped=%d",
-                    safe_name, sender_email, inserted, skipped,
+                    safe_name, sender_email, ingest_result.inserted, ingest_result.skipped,
                 )
                 attachments_ingested += 1
-                sets_inserted += inserted
-                sets_skipped += skipped
+                sets_inserted += ingest_result.inserted
+                sets_skipped += ingest_result.skipped
                 message_had_processable_attachment = True
 
             if message_had_processable_attachment and not config.dry_run:
