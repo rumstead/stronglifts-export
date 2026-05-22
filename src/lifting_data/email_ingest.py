@@ -167,7 +167,9 @@ def ingest_from_gmail(
     try:
         imap.login(config.username, config.app_password)
         # Create destination mailbox if it does not already exist.
-        imap.create(config.processed_mailbox)
+        # Skip in dry-run: creating a label/mailbox is a remote side effect.
+        if not config.dry_run:
+            imap.create(config.processed_mailbox)
 
         status, _ = imap.select(config.source_mailbox)
         if status != "OK":
@@ -181,7 +183,9 @@ def ingest_from_gmail(
 
         for raw_msg_id in message_ids:
             messages_seen += 1
-            fetch_status, fetched = imap.fetch(raw_msg_id, "(RFC822)")
+            # BODY.PEEK[] fetches the full message without setting the \Seen flag,
+            # keeping polling idempotent and dry-run side-effect free.
+            fetch_status, fetched = imap.fetch(raw_msg_id, "(BODY.PEEK[])")
             if fetch_status != "OK" or not fetched or not fetched[0]:
                 continue
 
