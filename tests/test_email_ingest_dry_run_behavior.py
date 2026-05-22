@@ -93,6 +93,7 @@ def test_dry_run_does_not_mark_attachments_processed(tmp_path: Path, monkeypatch
     assert dry_run_result.attachments_seen == 1
     assert dry_run_result.attachments_ingested == 0
     assert ingest_calls["count"] == 0
+    assert not (tmp_path / "downloads").exists()
 
     processed_after_dry_run = connection.execute("SELECT COUNT(*) AS c FROM email_imports").fetchone()["c"]
     assert processed_after_dry_run == 0

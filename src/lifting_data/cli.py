@@ -51,6 +51,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Sender email allow-list entry (repeat flag for multiple)",
     )
     email_parser.add_argument(
+        "--allow-all-senders",
+        action="store_true",
+        help="Explicitly allow all senders (disables sender allow-list guardrail)",
+    )
+    email_parser.add_argument(
         "--subject-contains",
         default=None,
         help="Optional subject substring filter for candidate messages",
@@ -115,6 +120,8 @@ def main() -> int:
         app_password = os.getenv(args.imap_password_env)
         if not app_password:
             parser.error(f"Missing app password environment variable: {args.imap_password_env}")
+        if not args.allow_sender and not args.allow_all_senders:
+            parser.error("Provide at least one --allow-sender or use --allow-all-senders explicitly")
 
         config = EmailIngestConfig(
             imap_host=args.imap_host,
@@ -126,6 +133,7 @@ def main() -> int:
             sender_allowlist=tuple(args.allow_sender),
             subject_contains=args.subject_contains,
             download_dir=args.download_dir,
+            allow_all_senders=args.allow_all_senders,
             dry_run=args.dry_run,
         )
         result = ingest_from_gmail(connection, config)

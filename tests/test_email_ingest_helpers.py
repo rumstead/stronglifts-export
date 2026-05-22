@@ -17,6 +17,8 @@ def test_sender_allowlist_matching() -> None:
     assert sender_is_allowed("me@example.com", allowlist)
     assert sender_is_allowed("ME@EXAMPLE.COM", allowlist)
     assert not sender_is_allowed("nope@example.com", allowlist)
+    assert not sender_is_allowed("me@example.com", ())
+    assert sender_is_allowed("anyone@example.com", (), allow_all_senders=True)
 
 
 def test_attachment_csv_detection() -> None:

@@ -35,37 +35,33 @@ def ingest_csv(connection: sqlite3.Connection, csv_path: str) -> IngestResult:
         source_file,
         dedupe_key
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(dedupe_key) DO NOTHING
     """
 
     with connection:
         for item in parse_strong_csv(csv_path):
-            try:
-                connection.execute(
-                    sql,
-                    (
-                        item.workout_date,
-                        item.workout_name,
-                        item.duration_seconds,
-                        item.exercise_name,
-                        item.set_order,
-                        item.weight,
-                        item.reps,
-                        item.distance,
-                        item.seconds,
-                        item.rpe,
-                        item.volume,
-                        item.estimated_1rm,
-                        source_file,
-                        item.dedupe_key,
-                    ),
-                )
+            cursor = connection.execute(
+                sql,
+                (
+                    item.workout_date,
+                    item.workout_name,
+                    item.duration_seconds,
+                    item.exercise_name,
+                    item.set_order,
+                    item.weight,
+                    item.reps,
+                    item.distance,
+                    item.seconds,
+                    item.rpe,
+                    item.volume,
+                    item.estimated_1rm,
+                    source_file,
+                    item.dedupe_key,
+                ),
+            )
+            if cursor.rowcount == 1:
                 inserted += 1
-            except sqlite3.IntegrityError as exc:
-                error = str(exc).lower()
-                is_dedupe_conflict = "unique" in error and "sets.dedupe_key" in error
-                if is_dedupe_conflict:
-                    skipped += 1
-                    continue
-                raise
+            else:
+                skipped += 1
 
     return IngestResult(inserted=inserted, skipped=skipped)

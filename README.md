@@ -154,6 +154,8 @@ python3 -m lifting_data.cli --db data/lifts.db ingest-email \
 
 The command reads unread messages from the selected mailbox/label, validates sender and attachment type, ingests valid CSV files, deduplicates by message/attachment hash, and moves processed messages into `Strong/Processed`.
 
+Sender safety: pass one or more `--allow-sender` values to restrict ingestion. If you intentionally want to allow all senders, add `--allow-all-senders` explicitly.
+
 Optional extra guardrail for subject matching:
 
 ```bash
@@ -170,6 +172,7 @@ Dry-run mode (validation without ingest/move):
 ```bash
 python3 -m lifting_data.cli --db data/lifts.db ingest-email \
   --imap-user your-email@example.com \
+  --allow-sender your-email@example.com \
   --dry-run
 ```
 

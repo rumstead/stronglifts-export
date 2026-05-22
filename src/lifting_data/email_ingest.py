@@ -24,6 +24,7 @@ class EmailIngestConfig:
     sender_allowlist: tuple[str, ...]
     subject_contains: str | None
     download_dir: str
+    allow_all_senders: bool = False
     dry_run: bool = False
 
 
@@ -42,9 +43,11 @@ def attachment_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def sender_is_allowed(sender_email: str, allowlist: tuple[str, ...]) -> bool:
-    if not allowlist:
+def sender_is_allowed(sender_email: str, allowlist: tuple[str, ...], allow_all_senders: bool = False) -> bool:
+    if allow_all_senders:
         return True
+    if not allowlist:
+        return False
     normalized = sender_email.strip().lower()
     return normalized in {item.strip().lower() for item in allowlist}
 
@@ -149,7 +152,8 @@ def ingest_from_gmail(
     config: EmailIngestConfig,
 ) -> EmailIngestResult:
     inbox_path = Path(config.download_dir)
-    inbox_path.mkdir(parents=True, exist_ok=True)
+    if not config.dry_run:
+        inbox_path.mkdir(parents=True, exist_ok=True)
 
     messages_seen = 0
     attachments_seen = 0
@@ -188,7 +192,7 @@ def ingest_from_gmail(
             sender_email = parseaddr(email_message.get("From", ""))[1].strip().lower()
             subject = (email_message.get("Subject") or "").strip()
 
-            if not sender_is_allowed(sender_email, config.sender_allowlist):
+            if not sender_is_allowed(sender_email, config.sender_allowlist, config.allow_all_senders):
                 continue
             if config.subject_contains and config.subject_contains.lower() not in subject.lower():
                 continue
@@ -212,12 +216,11 @@ def ingest_from_gmail(
                     message_had_processable_attachment = True
                     continue
 
-                local_path = inbox_path / f"{file_hash[:12]}-{safe_name}"
-                local_path.write_bytes(payload)
-
                 inserted = 0
                 skipped = 0
                 if not config.dry_run:
+                    local_path = inbox_path / f"{file_hash[:12]}-{safe_name}"
+                    local_path.write_bytes(payload)
                     ingest_result = ingest_csv(connection, str(local_path))
                     inserted = ingest_result.inserted
                     skipped = ingest_result.skipped

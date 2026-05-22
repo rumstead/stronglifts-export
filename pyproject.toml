@@ -23,5 +23,8 @@ lifting-data = "lifting_data.cli:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+lifting_data = ["schema.sql"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

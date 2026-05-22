@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 
@@ -12,7 +13,6 @@ def connect(db_path: str) -> sqlite3.Connection:
 
 
 def init_db(connection: sqlite3.Connection) -> None:
-    schema_path = Path(__file__).with_name("schema.sql")
-    schema_sql = schema_path.read_text(encoding="utf-8")
+    schema_sql = resources.files("lifting_data").joinpath("schema.sql").read_text(encoding="utf-8")
     connection.executescript(schema_sql)
     connection.commit()
