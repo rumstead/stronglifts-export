@@ -1,0 +1,28 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+
+# Python build/distribution artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage and test artifacts
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environment and local env files
+venv/
+env/
+.env
+.env.*
+
+# Editor/system noise
+.DS_Store
+.vscode/
+
+# Project generated data and outputs
+data/
+output/

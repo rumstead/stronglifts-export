@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lifting-data"
+version = "0.1.0"
+description = "Strong CSV ingestion and chart generation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "plotly==5.24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.3",
+]
+
+[project.scripts]
+lifting-data = "lifting_data.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+lifting_data = ["schema.sql"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
