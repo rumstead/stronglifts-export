@@ -172,6 +172,7 @@ def generate_all_exercises_page(
     chart_data_json = json.dumps(all_chart_data, default=_json_default).replace("</", "<\\/").replace("<!--", "<\\!--")
     exercise_names_json = json.dumps(list(all_chart_data.keys()), default=_json_default).replace("</", "<\\/").replace("<!--", "<\\!--")
 
+    mobile_breakpoint = 600
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -183,19 +184,24 @@ def generate_all_exercises_page(
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       margin: 0;
-      padding: 20px;
+      padding: 12px;
       background: #fafafa;
     }}
     .controls {{
       max-width: 900px;
-      margin: 0 auto 16px auto;
+      margin: 0 auto 12px auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }}
     select {{
       font-size: 16px;
-      padding: 8px 12px;
+      padding: 10px 12px;
       border-radius: 6px;
       border: 1px solid #ccc;
-      min-width: 300px;
+      flex: 1;
+      min-width: 0;
+      max-width: 500px;
     }}
     #chart {{
       max-width: 900px;
@@ -203,7 +209,20 @@ def generate_all_exercises_page(
       background: white;
       border-radius: 8px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      padding: 10px;
+      padding: 8px;
+    }}
+    @media (max-width: {mobile_breakpoint}px) {{
+      body {{ padding: 8px; }}
+      .controls {{
+        flex-direction: column;
+        align-items: stretch;
+      }}
+      select {{
+        max-width: 100%;
+        font-size: 18px;
+        padding: 12px;
+      }}
+      #chart {{ padding: 4px; border-radius: 4px; }}
     }}
   </style>
 </head>
@@ -215,37 +234,46 @@ def generate_all_exercises_page(
   </div>
   <div id="chart"></div>
   <script>
-    var chartData = {chart_data_json};
-    var exerciseNames = {exercise_names_json};
+    const MOBILE_QUERY = window.matchMedia('(max-width: {mobile_breakpoint}px)');
+    const chartData = {chart_data_json};
+    const exerciseNames = {exercise_names_json};
 
-    var select = document.getElementById('exercise-select');
+    const select = document.getElementById('exercise-select');
     exerciseNames.forEach(function(name) {{
-      var opt = document.createElement('option');
+      const opt = document.createElement('option');
       opt.value = name;
       opt.textContent = name;
       select.appendChild(opt);
     }});
 
+    function getChartHeight() {{
+      return Math.max(350, window.innerHeight - 150);
+    }}
+
     function renderChart() {{
-      var name = select.value;
-      var data = chartData[name];
+      const name = select.value;
+      const data = chartData[name];
       if (!data) return;
 
-      var traceWeight = {{
+      const isMobile = MOBILE_QUERY.matches;
+
+      const traceWeight = {{
         x: data.dates,
         y: data.top_weights,
         mode: 'lines+markers',
         name: 'Top Weight',
+        marker: {{ size: 7 }},
         yaxis: 'y'
       }};
-      var trace1RM = {{
+      const trace1RM = {{
         x: data.dates,
         y: data.top_estimated,
         mode: 'lines+markers',
         name: 'Top Est. 1RM',
+        marker: {{ size: 7 }},
         yaxis: 'y'
       }};
-      var traceVolume = {{
+      const traceVolume = {{
         x: data.dates,
         y: data.total_volumes,
         type: 'bar',
@@ -254,25 +282,51 @@ def generate_all_exercises_page(
         yaxis: 'y2'
       }};
 
-      var layout = {{
-        title: name + ' Progress',
-        xaxis: {{ title: 'Workout Date' }},
-        yaxis: {{ title: 'Weight / Estimated 1RM', side: 'left' }},
-        yaxis2: {{ title: 'Volume', side: 'right', overlaying: 'y' }},
-        legend: {{ x: 0.01, y: 0.99, xanchor: 'left', yanchor: 'top' }},
+      const layout = {{
+        title: {{ text: name + ' Progress', font: {{ size: isMobile ? 14 : 17 }} }},
+        xaxis: {{
+          title: isMobile ? '' : 'Workout Date',
+          rangeselector: {{
+            buttons: [
+              {{ count: 1, label: '1M', step: 'month', stepmode: 'backward' }},
+              {{ count: 3, label: '3M', step: 'month', stepmode: 'backward' }},
+              {{ count: 6, label: '6M', step: 'month', stepmode: 'backward' }},
+              {{ count: 1, label: '1Y', step: 'year', stepmode: 'backward' }},
+              {{ step: 'all', label: 'All' }}
+            ],
+            font: {{ size: isMobile ? 11 : 13 }},
+            y: 1.15
+          }},
+          rangeslider: {{ visible: true, thickness: isMobile ? 0.08 : 0.06 }}
+        }},
+        yaxis: {{ title: isMobile ? '' : 'Weight / Est. 1RM', side: 'left', fixedrange: true }},
+        yaxis2: {{ title: isMobile ? '' : 'Volume', side: 'right', overlaying: 'y', fixedrange: true }},
+        legend: {{
+          orientation: isMobile ? 'h' : 'v',
+          x: isMobile ? 0.5 : 0.01,
+          y: isMobile ? -0.25 : 0.99,
+          xanchor: isMobile ? 'center' : 'left',
+          yanchor: isMobile ? 'top' : 'top'
+        }},
         template: 'plotly_white',
         dragmode: 'pan',
-        margin: {{ t: 50, b: 50, r: 80 }}
+        height: getChartHeight(),
+        margin: {{ t: 70, b: isMobile ? 40 : 50, l: isMobile ? 40 : 60, r: isMobile ? 40 : 80 }}
       }};
 
-      var config = {{
+      const config = {{
         scrollZoom: true,
-        displayModeBar: true,
+        displayModeBar: !isMobile,
+        responsive: true,
         modeBarButtonsToRemove: ['lasso2d', 'select2d']
       }};
 
       Plotly.react('chart', [traceWeight, trace1RM, traceVolume], layout, config);
     }}
+
+    // Re-render when crossing the mobile breakpoint or resizing
+    MOBILE_QUERY.addEventListener('change', renderChart);
+    window.addEventListener('resize', renderChart);
 
     // Render the first exercise on load
     if (exerciseNames.length > 0) {{
