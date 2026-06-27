@@ -2,10 +2,102 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+
+def _to_date(value: str) -> date:
+    """Parse a workout date that may include a time component."""
+    return date.fromisoformat(value.split("T")[0].split(" ")[0])
+
+
+def _linear_trend(x_ordinals: list[int], y_values: list[float]) -> tuple[float, float] | None:
+    n = len(x_ordinals)
+    if n < 2:
+        return None
+    mean_x = sum(x_ordinals) / n
+    mean_y = sum(y_values) / n
+    denom = sum((x - mean_x) ** 2 for x in x_ordinals)
+    if denom == 0:
+        return None
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_ordinals, y_values)) / denom
+    intercept = mean_y - slope * mean_x
+    return slope, intercept
+
+
+def _compute_progress_overlays(
+    dates: list[str],
+    estimated: list[float | None],
+) -> dict[str, object]:
+    """Derive progressive-overload overlays from per-session best Est. 1RM.
+
+    Every value here is computed across all sets in each session (the caller
+    passes the session's strongest set, chosen from all sets via the 1RM
+    formula). Produces a rolling-best (PR) envelope, new-PR markers, a linear
+    trend line, and a short human-readable summary with stall detection.
+    """
+    overlay: dict[str, object] = {
+        "pr_dates": [],
+        "pr_envelope": [],
+        "pr_marker_dates": [],
+        "pr_marker_values": [],
+        "trend_dates": [],
+        "trend_values": [],
+        "summary": "",
+    }
+
+    points = [(d, e) for d, e in zip(dates, estimated) if e is not None]
+    if not points:
+        return overlay
+
+    # Rolling best (PR envelope) and the sessions that set a new all-time best.
+    running_max: float | None = None
+    for d, e in points:
+        if running_max is None or e > running_max:
+            running_max = e
+            overlay["pr_marker_dates"].append(d)  # type: ignore[union-attr]
+            overlay["pr_marker_values"].append(e)  # type: ignore[union-attr]
+        overlay["pr_dates"].append(d)  # type: ignore[union-attr]
+        overlay["pr_envelope"].append(running_max)  # type: ignore[union-attr]
+
+    # Linear trend over the valid Est. 1RM points.
+    ordinals = [_to_date(d).toordinal() for d, _ in points]
+    values = [e for _, e in points]
+    trend = _linear_trend(ordinals, values)
+
+    direction = ""
+    if trend is not None:
+        slope, intercept = trend
+        overlay["trend_dates"] = [points[0][0], points[-1][0]]
+        overlay["trend_values"] = [
+            slope * ordinals[0] + intercept,
+            slope * ordinals[-1] + intercept,
+        ]
+        per_month = slope * 30.44
+        if per_month > 0.1:
+            direction = f"\u25b2 +{per_month:.1f}/mo"
+        elif per_month < -0.1:
+            direction = f"\u25bc {per_month:.1f}/mo"
+        else:
+            direction = "\u25ac holding steady"
+
+    # Stall detection: days between the last PR and the most recent session.
+    marker_dates = overlay["pr_marker_dates"]  # type: ignore[assignment]
+    last_pr = _to_date(marker_dates[-1])  # type: ignore[index]
+    last_session = _to_date(points[-1][0])
+    days_since_pr = (last_session - last_pr).days
+    stall = ""
+    if len(points) >= 4 and days_since_pr >= 42:
+        stall = f"  \u00b7  \u26a0 no new PR in {days_since_pr}d"
+
+    summary_parts = [f"Best Est. 1RM {max(values):.0f}"]
+    if direction:
+        summary_parts.append(direction)
+    overlay["summary"] = "   ".join(summary_parts) + stall
+    return overlay
 
 
 def generate_exercise_progress_chart(
@@ -48,22 +140,79 @@ def generate_exercise_progress_chart(
     top_estimated = [row["top_estimated_1rm"] for row in rows]
     total_volumes = [row["total_volume"] for row in rows]
 
+    overlay = _compute_progress_overlays(dates, top_estimated)
+
     figure = make_subplots(specs=[[{"secondary_y": True}]])
+    # Raw per-session strength signal (best set of the day), de-emphasized.
     figure.add_trace(
-        go.Scatter(x=dates, y=top_weights, mode="lines+markers", name="Top Weight"),
+        go.Scatter(
+            x=dates,
+            y=top_estimated,
+            mode="lines+markers",
+            name="Est. 1RM (best set)",
+            line={"color": "#9fb3c8", "width": 1},
+            marker={"size": 5, "color": "#9fb3c8"},
+        ),
         secondary_y=False,
     )
+    # Best-to-date (PR) envelope: clean, monotonic "is it stepping up?" line.
     figure.add_trace(
-        go.Scatter(x=dates, y=top_estimated, mode="lines+markers", name="Top Est. 1RM"),
+        go.Scatter(
+            x=overlay["pr_dates"],
+            y=overlay["pr_envelope"],
+            mode="lines",
+            name="Best to date",
+            line={"color": "#38a169", "width": 2, "shape": "hv"},
+        ),
         secondary_y=False,
     )
+    # Linear trend line: the headline direction.
     figure.add_trace(
-        go.Bar(x=dates, y=total_volumes, name="Total Volume", opacity=0.35),
+        go.Scatter(
+            x=overlay["trend_dates"],
+            y=overlay["trend_values"],
+            mode="lines",
+            name="Trend",
+            line={"color": "#2b6cb0", "width": 3, "dash": "dash"},
+            hoverinfo="skip",
+        ),
+        secondary_y=False,
+    )
+    # Sessions that set a new all-time best.
+    figure.add_trace(
+        go.Scatter(
+            x=overlay["pr_marker_dates"],
+            y=overlay["pr_marker_values"],
+            mode="markers",
+            name="New PR",
+            marker={"size": 11, "color": "#dd6b20", "symbol": "star", "line": {"color": "#fff", "width": 1}},
+        ),
+        secondary_y=False,
+    )
+    # Noisy single-set max; available via legend but hidden by default.
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=top_weights,
+            mode="lines+markers",
+            name="Top Weight",
+            marker={"size": 6},
+            visible="legendonly",
+        ),
+        secondary_y=False,
+    )
+    # Total volume across all sets; available via legend but hidden by default.
+    figure.add_trace(
+        go.Bar(x=dates, y=total_volumes, name="Total Volume", opacity=0.35, visible="legendonly"),
         secondary_y=True,
     )
 
+    title_text = f"{exercise_name} Progress"
+    if overlay["summary"]:
+        title_text += f'<br><span style="font-size:13px;color:#4a5568">{overlay["summary"]}</span>'
+
     figure.update_layout(
-        title=f"{exercise_name} Progress",
+        title=title_text,
         xaxis_title="Workout Date",
         yaxis_title="Weight",
         legend_title="Metrics",
@@ -159,6 +308,10 @@ def generate_all_exercises_page(
 
     if not all_chart_data:
         raise ValueError("No exercise data found for the selected date range")
+
+    # Derive progressive-overload overlays (PR envelope, trend, summary) per exercise.
+    for data in all_chart_data.values():
+        data["overlay"] = _compute_progress_overlays(data["dates"], data["top_estimated"])
 
     # Generate self-contained HTML with dropdown
     # Escape JSON for safe embedding in <script> tags
@@ -256,34 +409,74 @@ def generate_all_exercises_page(
       if (!data) return;
 
       const isMobile = MOBILE_QUERY.matches;
+      const overlay = data.overlay || {{}};
 
+      // Raw per-session strength signal (best set of the day), de-emphasized.
+      const traceEst = {{
+        x: data.dates,
+        y: data.top_estimated,
+        mode: 'lines+markers',
+        name: 'Est. 1RM (best set)',
+        line: {{ color: '#9fb3c8', width: 1 }},
+        marker: {{ size: 5, color: '#9fb3c8' }},
+        yaxis: 'y'
+      }};
+      // Best-to-date (PR) envelope: a clean, monotonic "is it stepping up?" line.
+      const tracePR = {{
+        x: overlay.pr_dates || [],
+        y: overlay.pr_envelope || [],
+        mode: 'lines',
+        name: 'Best to date',
+        line: {{ color: '#38a169', width: 2, shape: 'hv' }},
+        yaxis: 'y'
+      }};
+      // Linear trend line: the headline direction.
+      const traceTrend = {{
+        x: overlay.trend_dates || [],
+        y: overlay.trend_values || [],
+        mode: 'lines',
+        name: 'Trend',
+        line: {{ color: '#2b6cb0', width: 3, dash: 'dash' }},
+        hoverinfo: 'skip',
+        yaxis: 'y'
+      }};
+      // Sessions that set a new all-time best.
+      const tracePRMarkers = {{
+        x: overlay.pr_marker_dates || [],
+        y: overlay.pr_marker_values || [],
+        mode: 'markers',
+        name: 'New PR',
+        marker: {{ size: 11, color: '#dd6b20', symbol: 'star', line: {{ color: '#fff', width: 1 }} }},
+        yaxis: 'y'
+      }};
+      // Noisy single-set max; available via legend but hidden by default.
       const traceWeight = {{
         x: data.dates,
         y: data.top_weights,
         mode: 'lines+markers',
         name: 'Top Weight',
-        marker: {{ size: 7 }},
+        marker: {{ size: 6 }},
+        visible: 'legendonly',
         yaxis: 'y'
       }};
-      const trace1RM = {{
-        x: data.dates,
-        y: data.top_estimated,
-        mode: 'lines+markers',
-        name: 'Top Est. 1RM',
-        marker: {{ size: 7 }},
-        yaxis: 'y'
-      }};
+      // Total volume across all sets; available via legend but hidden by default.
       const traceVolume = {{
         x: data.dates,
         y: data.total_volumes,
         type: 'bar',
         name: 'Total Volume',
         opacity: 0.35,
+        visible: 'legendonly',
         yaxis: 'y2'
       }};
 
+      const titleText = name + ' Progress'
+        + (overlay.summary
+            ? '<br><span style="font-size:' + (isMobile ? 11 : 13) + 'px;color:#4a5568">' + overlay.summary + '</span>'
+            : '');
+
       const layout = {{
-        title: {{ text: name + ' Progress', font: {{ size: isMobile ? 14 : 17 }} }},
+        title: {{ text: titleText, font: {{ size: isMobile ? 14 : 17 }} }},
         xaxis: {{
           title: isMobile ? '' : 'Workout Date',
           rangeselector: {{
@@ -295,7 +488,7 @@ def generate_all_exercises_page(
               {{ step: 'all', label: 'All' }}
             ],
             font: {{ size: isMobile ? 11 : 13 }},
-            y: 1.15
+            y: 1.18
           }},
           rangeslider: {{ visible: true, thickness: isMobile ? 0.08 : 0.06 }}
         }},
@@ -311,7 +504,7 @@ def generate_all_exercises_page(
         template: 'plotly_white',
         dragmode: 'pan',
         height: getChartHeight(),
-        margin: {{ t: 70, b: isMobile ? 40 : 50, l: isMobile ? 40 : 60, r: isMobile ? 40 : 80 }}
+        margin: {{ t: 95, b: isMobile ? 40 : 50, l: isMobile ? 40 : 60, r: isMobile ? 40 : 80 }}
       }};
 
       const config = {{
@@ -321,7 +514,7 @@ def generate_all_exercises_page(
         modeBarButtonsToRemove: ['lasso2d', 'select2d']
       }};
 
-      Plotly.react('chart', [traceWeight, trace1RM, traceVolume], layout, config);
+      Plotly.react('chart', [traceEst, tracePR, traceTrend, tracePRMarkers, traceWeight, traceVolume], layout, config);
     }}
 
     // Re-render when crossing the mobile breakpoint or resizing
