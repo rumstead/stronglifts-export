@@ -15,4 +15,11 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_db(connection: sqlite3.Connection) -> None:
     schema_sql = resources.files("lifting_data").joinpath("schema.sql").read_text(encoding="utf-8")
     connection.executescript(schema_sql)
+    set_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(sets)").fetchall()
+    }
+    if "set_type" not in set_columns:
+        connection.execute(
+            "ALTER TABLE sets ADD COLUMN set_type TEXT NOT NULL DEFAULT 'normal'"
+        )
     connection.commit()

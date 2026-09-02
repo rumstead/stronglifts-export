@@ -12,15 +12,21 @@ from .ingest import ingest_csv
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Strong CSV ingest and charting")
+    parser = argparse.ArgumentParser(description="Strong and Hevy CSV ingest and charting")
     parser.add_argument("--db", default="data/lifts.db", help="Path to SQLite database")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init-db", help="Initialize database schema")
 
-    ingest_parser = subparsers.add_parser("ingest", help="Ingest a Strong CSV export")
-    ingest_parser.add_argument("--csv", required=True, help="Path to Strong CSV file")
+    ingest_parser = subparsers.add_parser("ingest", help="Ingest a Strong or Hevy CSV export")
+    ingest_parser.add_argument("--csv", required=True, help="Path to workout CSV file")
+    ingest_parser.add_argument(
+        "--format",
+        choices=("auto", "strong", "hevy"),
+        default="auto",
+        help="CSV format (default: detect from headers)",
+    )
 
     list_parser = subparsers.add_parser("list-exercises", help="List ingested exercise names")
     list_parser.add_argument("--limit", type=int, default=100, help="Max rows to print")
@@ -36,7 +42,9 @@ def _build_parser() -> argparse.ArgumentParser:
     plot_all_parser.add_argument("--start", help="Start date filter (YYYY-MM-DD)")
     plot_all_parser.add_argument("--end", help="End date filter (YYYY-MM-DD)")
 
-    email_parser = subparsers.add_parser("ingest-email", help="Ingest Strong CSV attachments from Gmail")
+    email_parser = subparsers.add_parser(
+        "ingest-email", help="Ingest Strong or Hevy CSV attachments from Gmail"
+    )
     email_parser.add_argument("--imap-host", default="imap.gmail.com", help="IMAP host")
     email_parser.add_argument("--imap-port", type=int, default=993, help="IMAP TLS port")
     email_parser.add_argument("--imap-user", required=True, help="Gmail address used for IMAP")
@@ -100,7 +108,7 @@ def main() -> int:
         return 0
 
     if args.command == "ingest":
-        result = ingest_csv(connection, args.csv)
+        result = ingest_csv(connection, args.csv, csv_format=args.format)
         print(f"Import complete: inserted={result.inserted}, skipped={result.skipped}")
         return 0
 

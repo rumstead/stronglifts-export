@@ -28,6 +28,7 @@ class StrongSet:
     duration_seconds: int | None
     exercise_name: str
     set_order: int
+    set_type: str
     weight: float | None
     reps: int | None
     distance: float | None
@@ -162,6 +163,7 @@ def parse_strong_csv(csv_path: str) -> Iterable[StrongSet]:
                 duration_seconds=_parse_duration_seconds(_cell(row, "Duration")),
                 exercise_name=exercise_name,
                 set_order=set_order,
+                set_type="normal",
                 weight=weight,
                 reps=reps,
                 distance=distance,

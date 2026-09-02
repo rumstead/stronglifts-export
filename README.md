@@ -1,9 +1,9 @@
-# Strong CSV Lift Tracking
+# Strong and Hevy CSV Lift Tracking
 
-This project ingests CSV exports from Strong, stores deduplicated set history in SQLite, and generates exercise progress charts as HTML files.
+This project ingests workout CSV exports from Strong or Hevy, stores deduplicated set history in SQLite, and generates exercise progress charts as HTML files.
 
 ## Why this workflow
-Strong exports CSV, but does not provide reliable unattended sync from iPhone. This pipeline assumes manual export from the app and automates everything after that.
+The pipeline assumes manual export from the workout app and automates ingestion, deduplication, and chart generation after that.
 
 ## Setup
 1. Create and activate a virtual environment.
@@ -25,11 +25,45 @@ Initialize database:
 python3 -m lifting_data.cli --db data/lifts.db init-db
 ```
 
-Ingest a Strong CSV export:
+Ingest a Strong or Hevy CSV export (format is detected from its headers):
 
 ```bash
-python3 -m lifting_data.cli --db data/lifts.db ingest --csv path/to/strong-export.csv
+python3 -m lifting_data.cli --db data/lifts.db ingest --csv path/to/workout-export.csv
 ```
+
+Override detection when troubleshooting:
+
+```bash
+python3 -m lifting_data.cli --db data/lifts.db ingest \
+  --format hevy \
+  --csv path/to/hevy-export.csv
+```
+
+## One-time Strong to Hevy migration
+
+The source [strong_workouts.csv](strong_workouts.csv) stores pounds in Strong's unitless `Weight` column, while Hevy is interpreting those values as kilograms. The validated migration copy is [output/strong_workouts_for_hevy.csv](output/strong_workouts_for_hevy.csv); it converts only populated weights using $kg = lb \times 0.45359237$.
+
+Validation facts:
+
+- Source rows: 3,136
+- Source SHA-256: `1dd0022553d1b9d814c7c45b7c4c92461def6b4412364c34cc74f04a183b657e`
+- Migration SHA-256: `9dba01107f0e4bcf865986e7453b1bb6c2994ce53efa9c3e58012645a6b152de`
+- Non-weight field mismatches: 0
+- Example: 60 lb became 27.2155422 kg
+
+Import the migration copy once using Hevy's **Import Strong CSV** workflow. Verify representative lifts in Hevy before continuing; revert that import if they are wrong.
+
+After migration, export all workouts from Hevy and initialize a clean database:
+
+```bash
+cp data/lifts.db data/lifts.pre-hevy.db  # when an existing database is present
+python3 -m lifting_data.cli --db data/hevy-lifts.db init-db
+python3 -m lifting_data.cli --db data/hevy-lifts.db ingest \
+  --format hevy \
+  --csv path/to/first-hevy-export.csv
+```
+
+Use that Hevy database for future cumulative exports. Do not mix legacy Strong rows into it: Strong weights are unitless, while Hevy weights are normalized to kilograms during parsing. A `weight_lbs` Hevy export is converted to kilograms automatically.
 
 List ingested exercises:
 
@@ -125,7 +159,7 @@ Published image tags:
 
 ## Gmail ingestion automation
 
-This option keeps Strong export manual in the iPhone app, then automates everything after the email send.
+This option keeps the workout export manual in the phone app, then automates everything after the email send. Both Strong and Hevy CSV header signatures are accepted.
 
 1. In Gmail, create a filter that tags incoming Strong export emails.
 2. Enable IMAP in Gmail settings.
@@ -179,3 +213,5 @@ Hourly automation example via cron:
 ## Notes
 - Re-importing the same CSV is safe. Duplicate sets are skipped automatically.
 - Current schema stores derived metrics such as set volume and estimated 1RM.
+- Re-importing identical or cumulative Hevy exports is safe; existing sets are skipped.
+- Native Hevy workout exports cannot be imported back into Hevy. Hevy's import flow accepts Strong-format CSV.

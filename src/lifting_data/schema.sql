@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS sets (
     duration_seconds INTEGER,
     exercise_name TEXT NOT NULL,
     set_order INTEGER NOT NULL,
+    set_type TEXT NOT NULL DEFAULT 'normal',
     weight REAL,
     reps INTEGER,
     distance REAL,

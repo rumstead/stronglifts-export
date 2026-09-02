@@ -4,6 +4,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .csv_format import CsvFormat, detect_csv_format
+from .hevy_csv import parse_hevy_csv
 from .strong_csv import parse_strong_csv
 
 
@@ -13,10 +15,17 @@ class IngestResult:
     skipped: int
 
 
-def ingest_csv(connection: sqlite3.Connection, csv_path: str) -> IngestResult:
+def ingest_csv(
+    connection: sqlite3.Connection,
+    csv_path: str,
+    csv_format: CsvFormat = "auto",
+) -> IngestResult:
     inserted = 0
     skipped = 0
     source_file = Path(csv_path).name
+    resolved_format = detect_csv_format(csv_path, csv_format)
+    parser = parse_strong_csv if resolved_format == "strong" else parse_hevy_csv
+    items = list(parser(csv_path))
 
     sql = """
     INSERT INTO sets (
@@ -25,6 +34,7 @@ def ingest_csv(connection: sqlite3.Connection, csv_path: str) -> IngestResult:
         duration_seconds,
         exercise_name,
         set_order,
+        set_type,
         weight,
         reps,
         distance,
@@ -34,12 +44,12 @@ def ingest_csv(connection: sqlite3.Connection, csv_path: str) -> IngestResult:
         estimated_1rm,
         source_file,
         dedupe_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(dedupe_key) DO NOTHING
     """
 
     with connection:
-        for item in parse_strong_csv(csv_path):
+        for item in items:
             cursor = connection.execute(
                 sql,
                 (
@@ -48,6 +58,7 @@ def ingest_csv(connection: sqlite3.Connection, csv_path: str) -> IngestResult:
                     item.duration_seconds,
                     item.exercise_name,
                     item.set_order,
+                    getattr(item, "set_type", "normal"),
                     item.weight,
                     item.reps,
                     item.distance,

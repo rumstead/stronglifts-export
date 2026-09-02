@@ -13,8 +13,8 @@ from email.message import Message
 from email.utils import parseaddr
 from pathlib import Path
 
+from .csv_format import detect_csv_format_from_columns
 from .ingest import ingest_csv
-from .strong_csv import REQUIRED_COLUMNS
 
 log = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ def record_processed_email_attachment(
 
 def _safe_filename(name: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", name)
-    return cleaned.strip("-") or "strong-export.csv"
+    return cleaned.strip("-") or "workout-export.csv"
 
 
 def _extract_attachments(message: Message) -> list[tuple[str, str, bytes]]:
@@ -156,14 +156,11 @@ def _move_message(imap: imaplib.IMAP4_SSL, raw_msg_id: bytes, destination_mailbo
     return store_status == "OK"
 
 
-def _validate_csv_headers(payload: bytes) -> None:
-    """Raise ValueError if payload is missing required Strong CSV columns."""
+def _validate_csv_headers(payload: bytes) -> str:
+    """Return the detected workout format or raise ValueError."""
     text = payload.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
-    columns = set(reader.fieldnames or [])
-    missing = REQUIRED_COLUMNS.difference(columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
+    return detect_csv_format_from_columns(reader.fieldnames or [])
 
 
 def ingest_from_gmail(
@@ -248,10 +245,10 @@ def ingest_from_gmail(
 
                 if config.dry_run:
                     try:
-                        _validate_csv_headers(payload)
+                        detected_format = _validate_csv_headers(payload)
                         log.info(
-                            "[dry-run] Attachment %r from %s passes header validation",
-                            safe_name, sender_email,
+                            "[dry-run] Attachment %r from %s passes %s header validation",
+                            safe_name, sender_email, detected_format,
                         )
                     except ValueError as exc:
                         log.warning(

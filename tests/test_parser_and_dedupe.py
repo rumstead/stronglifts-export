@@ -116,7 +116,7 @@ def test_ingest_reraises_non_dedupe_integrity_errors(tmp_path: Path, monkeypatch
     init_db(connection)
 
     csv_path = tmp_path / "unused.csv"
-    csv_path.write_text("", encoding="utf-8")
+    _write_sample_csv(csv_path)
 
     with pytest.raises(sqlite3.IntegrityError):
         ingest_module.ingest_csv(connection, str(csv_path))

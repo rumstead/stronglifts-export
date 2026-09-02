@@ -1,4 +1,4 @@
-"""Strong CSV lift ingestion and charting."""
+"""Strong and Hevy CSV lift ingestion and charting."""
 
 __all__ = [
     "db",

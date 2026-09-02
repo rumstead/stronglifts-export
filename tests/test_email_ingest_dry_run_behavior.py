@@ -57,6 +57,26 @@ class _FakeImap:
         return "BYE", [b""]
 
 
+class _FakeHevyImap(_FakeImap):
+    def __init__(self, host: str, port: int) -> None:
+        super().__init__(host, port)
+        message = EmailMessage()
+        message["From"] = "me@example.com"
+        message["Subject"] = "Hevy export"
+        message["Message-Id"] = "<hevy-message-1>"
+        message.set_content("Attached")
+        message.add_attachment(
+            (
+                "title,start_time,end_time,exercise_title,set_index,set_type,weight_kg,reps\n"
+                "Push Day,2026-05-01 08:00,2026-05-01 09:00,Bench Press,0,normal,100,5\n"
+            ).encode("utf-8"),
+            maintype="text",
+            subtype="csv",
+            filename="hevy.csv",
+        )
+        self._raw_message = message.as_bytes()
+
+
 def _config(download_dir: Path, dry_run: bool) -> EmailIngestConfig:
     return EmailIngestConfig(
         imap_host="imap.example.com",
@@ -94,3 +114,20 @@ def test_dry_run_does_not_mark_attachments_processed(tmp_path: Path, monkeypatch
 
     processed_after_real_run = connection.execute("SELECT COUNT(*) AS c FROM email_imports").fetchone()["c"]
     assert processed_after_real_run == 1
+
+
+def test_dry_run_accepts_hevy_without_side_effects(tmp_path: Path, monkeypatch) -> None:
+    connection = connect(str(tmp_path / "lifts.db"))
+    init_db(connection)
+    monkeypatch.setattr(email_ingest_module.imaplib, "IMAP4_SSL", _FakeHevyImap)
+
+    result = ingest_from_gmail(
+        connection, _config(tmp_path / "downloads", dry_run=True)
+    )
+
+    assert result.attachments_seen == 1
+    assert result.attachments_invalid == 0
+    assert result.attachments_ingested == 0
+    assert not (tmp_path / "downloads").exists()
+    assert connection.execute("SELECT COUNT(*) FROM sets").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM email_imports").fetchone()[0] == 0
