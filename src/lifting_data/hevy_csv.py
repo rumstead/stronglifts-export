@@ -17,7 +17,7 @@ REQUIRED_COLUMNS = {
     "reps",
 }
 WEIGHT_COLUMNS = {"weight_kg", "weight_lbs"}
-LB_TO_KG = Decimal("0.45359237")
+KG_TO_LB = Decimal("2.2046226218487757")
 MILES_TO_KM = Decimal("1.609344")
 
 
@@ -120,7 +120,7 @@ def _build_dedupe_key(
     return hashlib.sha256("|".join(fields).encode("utf-8")).hexdigest()
 
 
-def _weight_kg(row: dict[str, str | None], row_number: int) -> float | None:
+def _weight_lbs(row: dict[str, str | None], row_number: int) -> float | None:
     weight_kg = _parse_decimal(_cell(row, "weight_kg"), "weight_kg", row_number)
     weight_lbs = _parse_decimal(
         _cell(row, "weight_lbs"), "weight_lbs", row_number
@@ -130,9 +130,9 @@ def _weight_kg(row: dict[str, str | None], row_number: int) -> float | None:
             f"Row {row_number} populates both weight_kg and weight_lbs"
         )
     if weight_kg is not None:
-        return float(weight_kg)
+        return float(weight_kg * KG_TO_LB)
     if weight_lbs is not None:
-        return float(weight_lbs * LB_TO_KG)
+        return float(weight_lbs)
     return None
 
 
@@ -197,7 +197,7 @@ def parse_hevy_csv(csv_path: str) -> Iterable[HevySet]:
                 raise ValueError(f"Row {row_number} has invalid set_index")
             set_order = set_index + 1
             set_type = _cell(row, "set_type") or "normal"
-            weight = _weight_kg(row, row_number)
+            weight = _weight_lbs(row, row_number)
             reps = _parse_int(_cell(row, "reps"), "reps", row_number)
             distance = _distance_km(row, row_number)
             seconds = _parse_float(

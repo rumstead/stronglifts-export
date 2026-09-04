@@ -37,6 +37,7 @@ def test_generate_exercise_progress_chart_writes_html_and_returns_point_count(tm
     full_html = full_chart.read_text(encoding="utf-8").lower()
     assert "<html" in full_html
     assert "plotly" in full_html
+    assert "est. 1rm, lb" in full_html
 
     filtered_chart = tmp_path / "output" / "bench-press-filtered.html"
     filtered_points = generate_exercise_progress_chart(

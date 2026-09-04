@@ -17,7 +17,7 @@ HEADER = (
 )
 
 
-def test_parse_hevy_csv_maps_kg_row(tmp_path: Path) -> None:
+def test_parse_hevy_csv_converts_kg_to_lbs(tmp_path: Path) -> None:
     csv_path = tmp_path / "hevy.csv"
     csv_path.write_text(
         HEADER
@@ -33,11 +33,11 @@ def test_parse_hevy_csv_maps_kg_row(tmp_path: Path) -> None:
     assert rows[0].duration_seconds == 3600
     assert rows[0].set_order == 1
     assert rows[0].set_type == "normal"
-    assert rows[0].weight == 100.0
-    assert rows[0].volume == 500.0
+    assert rows[0].weight == pytest.approx(220.46226218487757)
+    assert rows[0].volume == pytest.approx(1102.3113109243879)
 
 
-def test_parse_hevy_csv_converts_lbs_to_kg(tmp_path: Path) -> None:
+def test_parse_hevy_csv_preserves_lbs(tmp_path: Path) -> None:
     csv_path = tmp_path / "hevy.csv"
     csv_path.write_text(
         HEADER
@@ -48,8 +48,8 @@ def test_parse_hevy_csv_converts_lbs_to_kg(tmp_path: Path) -> None:
 
     row = list(parse_hevy_csv(str(csv_path)))[0]
 
-    assert row.weight == pytest.approx(27.2155422)
-    assert row.volume == pytest.approx(136.077711)
+    assert row.weight == 60.0
+    assert row.volume == 300.0
 
 
 def test_parse_hevy_csv_converts_miles_to_km(tmp_path: Path) -> None:

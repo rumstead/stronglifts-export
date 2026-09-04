@@ -63,7 +63,23 @@ python3 -m lifting_data.cli --db data/hevy-lifts.db ingest \
   --csv path/to/first-hevy-export.csv
 ```
 
-Use that Hevy database for future cumulative exports. Do not mix legacy Strong rows into it: Strong weights are unitless, while Hevy weights are normalized to kilograms during parsing. A `weight_lbs` Hevy export is converted to kilograms automatically.
+Use that Hevy database for future cumulative exports. Charts and stored derived metrics use pounds, matching this project's original Strong history. A `weight_lbs` Hevy export is preserved, while a `weight_kg` Hevy export is converted to pounds automatically.
+
+### Recovering from the earlier kilogram import
+
+If a Hevy `weight_lbs` export was ingested by a release that converted it to kilograms, the database contains incorrect weights and dedupe keys. Back it up, deploy the corrected release, and rebuild from a full Hevy export rather than importing over the bad rows:
+
+```bash
+mv data/lifts.db data/lifts.pre-hevy-unit-fix.db
+python3 -m lifting_data.cli --db data/lifts.db init-db
+python3 -m lifting_data.cli --db data/lifts.db ingest \
+  --format hevy \
+  --csv workout_data.csv
+python3 -m lifting_data.cli --db data/lifts.db plot-all \
+  --output output/index.html
+```
+
+The full Hevy export already contains the history migrated from Strong, so the rebuilt database must not be preloaded with the old Strong CSV.
 
 List ingested exercises:
 

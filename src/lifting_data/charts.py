@@ -75,7 +75,7 @@ def _build_exercise_payload(
         if len(points) >= 4 and days_since_pr >= 42:
             stall = f"  \u00b7  \u26a0 no new PR in {days_since_pr}d"
 
-        summary_parts = [f"Best Est. 1RM {max(values):.0f}"]
+        summary_parts = [f"Best Est. 1RM {max(values):.0f} lb"]
         if direction:
             summary_parts.append(direction)
         summary = "   ".join(summary_parts) + stall
@@ -163,10 +163,10 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 
     // One simple chart per metric, like the Strong app.
     const CHART_DEFS = [
-      { title: 'Best Set (Est. 1RM)', kind: 'line', x: d => d.dates, y: d => d.top_estimated },
-      { title: 'Best Set (Max Weight)', kind: 'line', x: d => d.dates, y: d => d.top_weights },
-      { title: 'Total Volume', kind: 'bar', x: d => d.dates, y: d => d.total_volumes },
-      { title: 'PR Progression (as 1RM)', kind: 'step', x: d => d.pr_dates, y: d => d.pr_values },
+      { title: 'Best Set (Est. 1RM, lb)', kind: 'line', x: d => d.dates, y: d => d.top_estimated },
+      { title: 'Best Set (Max Weight, lb)', kind: 'line', x: d => d.dates, y: d => d.top_weights },
+      { title: 'Total Volume (lb-reps)', kind: 'bar', x: d => d.dates, y: d => d.total_volumes },
+      { title: 'PR Progression (as 1RM, lb)', kind: 'step', x: d => d.pr_dates, y: d => d.pr_values },
       { title: 'Max Consecutive Reps', kind: 'line', x: d => d.dates, y: d => d.max_reps }
     ];
 
