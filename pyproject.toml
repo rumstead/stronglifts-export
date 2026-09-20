@@ -9,7 +9,7 @@ description = "Strong CSV ingestion and chart generation"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "plotly==5.24.1",
+  "plotly==7.1.0",
 ]
 
 [project.optional-dependencies]
