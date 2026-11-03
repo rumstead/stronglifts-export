@@ -12,7 +12,7 @@ The training history makes the gap concrete. The program is three straight worki
 | --- | --- | --- | --- |
 | Bench Press (Barbell) | 205×8,7,7 → 215×6,6,5 → (31-day gap) → 185×8,7,6 | e1RM "drop" | "Returning from layoff — 195 × 3, aim 8,7,7" |
 | Lateral Raise (Dumbbell) | 15×11,11,9 … 15×11,12,11 | flat e1RM line (+1 rep barely moves Epley) | "Reps climbing: +5 total reps in 8 sessions; 1 rep from moving up" |
-| Leg Extension (Machine) | 240 lb every session since April, 9–13 reps | flat line | "Plateau at 240 for 20+ sessions — likely stack max; switch to slower tempo / single-leg / higher reps" |
+| Lat Pulldown (Cable) | 153×10,8,7 repeated through October | flat line | "No rep gains in 3 sessions at 153 — deload to 148 and build to 10" |
 | Pull Up (Assisted) | 40 → 60 lb assistance | e1RM **rising** (wrong: more assistance is easier) | "Assistance increased — regression" |
 
 ## Inspiration
@@ -45,7 +45,7 @@ The training history makes the gap concrete. The program is three straight worki
 - Affected code: new `src/lifting_data/progression.py`, rewritten `charts.py` template, `cli.py`, an optional `progression.toml` config, tests.
 - No schema change; all metrics are derived from the existing `sets` table.
 
-## Open Questions
-- Rep ranges: infer from history (e.g. 6–8 for bench, 10–12 for lateral raise), or declare them explicitly per exercise in config? Proposal: infer, with config override.
-- Increments: confirm the smallest available jumps (dumbbells in 5 lb steps? cable stack in 5 or 10 lb?).
-- Start logging RPE/RIR in Hevy? That would enable RP-style effort targets and a better e1RM than Epley at high reps.
+## Decisions
+- Rep ranges are inferred from history (reps before each weight increase → top; reps after the jump → bottom, rounded down), snapped to familiar brackets, and overridable per exercise in `progression.toml`. Exercises with fewer than four sessions default to 8–12.
+- Increments are 5 lb. Equipment with odd steps (cable row, lat pulldown, and other cable stacks where ≥25% of sessions use non-multiples of 5) moves to the next weight actually used; assisted movements always use observed weights.
+- RPE from Hevy is already ingested (logged since September 2026). It is used to spot easy sessions (RPE ≤ 8 → add a rep to every set), flag grinding stalls, and is shown on every set. Trends stay on plain Epley so pre-RPE history remains comparable.

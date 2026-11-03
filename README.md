@@ -99,6 +99,37 @@ Use date range filters:
 python3 -m lifting_data.cli --db data/lifts.db plot --exercise "Bench Press" --start 2026-01-01 --end 2026-12-31 --output output/bench-press-2026.html
 ```
 
+## Progress dashboard and next-workout coach
+
+`plot-all` builds a phone-friendly dashboard with four tabs:
+
+- **Next** — for each workout (Upper One, Lower Two, …), the recommended weight × reps for every exercise, with the reason. The workout that usually follows your last one is marked "up next".
+- **Progress** — every exercise trained in the last 60 days, with a 12-week trend line, 4- and 12-week change, and a status: Progressing, Holding, Stalled, Regressing, or Returning. Problems are listed first; older exercises are under "Archived".
+- **Exercise** — estimated 1RM trend with PRs, total reps at the working weight (shows rep gains at a fixed weight), rep records (best weight for 1+/3+/5+/8+/10+/12+ reps), and recent sessions with RPE.
+- **Volume** — hard sets per muscle per week compared with an approximate productive range.
+
+Print the next session in the terminal:
+
+```bash
+python3 -m lifting_data.cli --db data/lifts.db next-workout            # predicted next workout
+python3 -m lifting_data.cli --db data/lifts.db next-workout --workout "Upper One"
+python3 -m lifting_data.cli --db data/lifts.db rep-ranges              # inferred ranges and steps
+```
+
+### How recommendations work (double progression)
+
+1. **Working sets** are the hardest weight you did for 2+ sets. Warm-up sets, drop sets, heavy singles and lighter ramp-up sets don't count.
+2. **Rep range** is inferred from history: the reps you reached before each weight increase set the top; where you landed after the jump sets the bottom. Exercises with fewer than four sessions default to 8–12.
+3. **Next session:**
+   - every set at the top of the range → add weight (5 lb, or the next weight you've used on odd-step cable stacks), and start at the bottom of the range;
+   - otherwise → same weight, one more rep on the weakest set (every set, if the last session's RPE was 8 or lower);
+   - below the range two sessions running without improving → drop back one step;
+   - no rep gains in 3 sessions at the same weight → deload ~10%;
+   - 14+ days since you last did it → ease back in at ~90%.
+4. **Assisted** exercises are inverted: less assistance is progress.
+
+Override any of this with `--config progression.toml` (see `progression.example.toml`).
+
 ## One-command pipeline
 
 ```bash
