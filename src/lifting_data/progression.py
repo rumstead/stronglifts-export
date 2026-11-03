@@ -32,6 +32,10 @@ ACTIVE_WINDOW_DAYS = 60
 REP_RANGE_LOOKBACK_DAYS = 365
 MAX_UP_EVENT_GAP_DAYS = 21
 
+# Rep cost of a weight increase when there is no history of increases at all.
+DEFAULT_REPS_LOST_PER_10PCT = 1.0
+TARGET_RPE = 9.0
+
 STATUS_ORDER = ("Regressing", "Stalled", "Returning", "Holding", "Progressing", "Archived")
 
 
@@ -427,6 +431,7 @@ def prescribe(
     increment: float,
     config: ProgressionConfig,
     as_of: date,
+    reps_lost_per_10pct: float = DEFAULT_REPS_LOST_PER_10PCT,
 ) -> Prescription:
     last = sessions[-1]
     low, high = rep_range.low, rep_range.high
@@ -472,11 +477,16 @@ def prescribe(
         if easy:
             why += ", and it felt easy"
         verb = "less assistance" if kind == "assisted" else "move up"
+        targets = post_increase_targets(
+            reps, rpe, weight, new_weight, kind, config.bodyweight, low, high, reps_lost_per_10pct
+        )
+        aim = ",".join(str(t) for t in targets)
         return Prescription(
             "increase",
             new_weight,
-            tuple([low] * n_sets),
-            f"{why}. {verb.capitalize()}: {unit_change(new_weight)}; build back from {low} reps.",
+            targets,
+            f"{why}. {verb.capitalize()}: {unit_change(new_weight)}; aim for {aim} "
+            f"(you usually lose ~{reps_lost_per_10pct:.1f} reps per 10% added).",
             short=f"Hit {high} on every set{' easily' if easy else ''} — {verb}",
         )
 
@@ -563,10 +573,68 @@ def with_targets(
     elif rx.action == "add-load":
         goal = "Add weight or a harder variation once this is easy"
     elif rx.action == "increase":
-        goal = f"{low}+ every set is a win · {move} at {high}×{n}"
+        goal = f"{low}+ every set still counts · {move} again at {high}×{n}"
     else:
         goal = f"Hit {high} on all {n} sets → {w(next_up)} lb"
     return replace(rx, effort=EFFORT_BY_ACTION.get(rx.action, ""), goal=goal)
+
+
+def effective_load(weight: float, kind: str, bodyweight: float) -> float:
+    if kind == "assisted":
+        return max(bodyweight - weight, 1.0)
+    return weight
+
+
+def reps_lost_per_10pct(sessions: list[Session], kind: str, bodyweight: float) -> float | None:
+    """Median reps lost per 10% load increase, measured from this exercise's own jumps.
+
+    The textbook Epley curve predicts ~3.5 reps per 10%; many lifters (who rarely
+    train to true failure) lose far fewer, so the lifter's own history wins.
+    Returns None with fewer than 3 jumps.
+    """
+    ratios: list[float] = []
+    for prev, cur in zip(sessions, sessions[1:]):
+        if (cur.day - prev.day).days > MAX_UP_EVENT_GAP_DAYS:
+            continue
+        if not _harder(cur.working_weight, prev.working_weight, kind == "assisted"):
+            continue
+        before = effective_load(prev.working_weight, kind, bodyweight)
+        after = effective_load(cur.working_weight, kind, bodyweight)
+        pct = (after / before - 1) * 100 if before > 0 else 0
+        if pct <= 0:
+            continue
+        ratios.append(max(0.0, _avg(prev.reps) - _avg(cur.reps)) / pct * 10)
+    return float(median(ratios)) if len(ratios) >= 3 else None
+
+
+def post_increase_targets(
+    reps: list[int],
+    rpe: float | None,
+    weight: float,
+    new_weight: float,
+    kind: str,
+    bodyweight: float,
+    low: int,
+    high: int,
+    per_10pct: float,
+) -> tuple[int, ...]:
+    """Per-set targets at a heavier weight: last reps minus the expected rep cost.
+
+    The cost scales with the size of the jump, measured from the lifter's
+    history. Reps left in reserve last time (RPE below 9) are added back; a
+    grinding RPE above 9 takes a little more off. Targets stay in the rep range.
+    """
+    before = effective_load(weight, kind, bodyweight)
+    after = effective_load(new_weight, kind, bodyweight)
+    pct = (after / before - 1) * 100 if before > 0 else 0.0
+    cost = per_10pct * pct / 10
+    reserve = 0.0 if rpe is None else max(-1.0, min(2.0, TARGET_RPE - rpe))
+    targets = []
+    for r in reps:
+        predicted = int(r - cost + reserve + 0.5)
+        predicted = min(predicted, r + max(0, int(reserve)))  # never more than you just did, unless it was easy
+        targets.append(max(low, min(high, predicted)))
+    return tuple(targets)
 
 
 def _avg(values: list[int]) -> float:
@@ -633,6 +701,7 @@ def analyze_exercise(
     sessions: list[Session],
     config: ProgressionConfig,
     as_of: date,
+    global_reps_lost_per_10pct: float = DEFAULT_REPS_LOST_PER_10PCT,
 ) -> ExerciseAnalysis:
     if is_assisted(name):
         kind = "assisted"
@@ -651,7 +720,11 @@ def analyze_exercise(
     status, status_reason = classify_status(sessions, scores, as_of, config.layoff_days)
     prescription = None
     if status != "Archived":
-        prescription = prescribe(sessions, kind, rep_range, ladder, increment, config, as_of)
+        own_cost = reps_lost_per_10pct(sessions, kind, config.bodyweight)
+        prescription = prescribe(
+            sessions, kind, rep_range, ladder, increment, config, as_of,
+            reps_lost_per_10pct=own_cost if own_cost is not None else global_reps_lost_per_10pct,
+        )
         prescription = with_targets(prescription, sessions[-1], kind, rep_range, ladder, increment)
     return ExerciseAnalysis(
         name=name,
@@ -669,6 +742,17 @@ def analyze_exercise(
     )
 
 
+def _global_reps_lost_per_10pct(sessions: dict[str, list[Session]], bodyweight: float) -> float:
+    """Median rep cost across all exercises, for lifts with too few jumps of their own."""
+    values = []
+    for name, history in sessions.items():
+        kind = "assisted" if is_assisted(name) else "weighted"
+        value = reps_lost_per_10pct(history, kind, bodyweight)
+        if value is not None:
+            values.append(value)
+    return float(median(values)) if values else DEFAULT_REPS_LOST_PER_10PCT
+
+
 def analyze_all(
     connection: sqlite3.Connection,
     config: ProgressionConfig | None = None,
@@ -680,7 +764,10 @@ def analyze_all(
     config = config or ProgressionConfig()
     as_of = as_of or date.today()
     sessions = load_sessions(connection, start_date, end_date)
-    analyses = {name: analyze_exercise(name, s, config, as_of) for name, s in sessions.items()}
+    global_cost = _global_reps_lost_per_10pct(sessions, config.bodyweight)
+    analyses = {
+        name: analyze_exercise(name, s, config, as_of, global_cost) for name, s in sessions.items()
+    }
     # Most recently trained first; ties broken alphabetically.
     by_name = sorted(analyses.items())
     by_recent = sorted(by_name, key=lambda kv: kv[1].sessions[-1].started_at, reverse=True)

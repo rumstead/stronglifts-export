@@ -121,7 +121,7 @@ python3 -m lifting_data.cli --db data/lifts.db rep-ranges              # inferre
 1. **Working sets** are the hardest weight you did for 2+ sets. Warm-up sets, drop sets, heavy singles and lighter ramp-up sets don't count.
 2. **Rep range** is inferred from history: the reps you reached before each weight increase set the top; where you landed after the jump sets the bottom. Exercises with fewer than four sessions default to 8–12.
 3. **Next session:**
-   - every set at the top of the range → add weight (5 lb, or the next weight you've used on odd-step cable stacks), and start at the bottom of the range;
+   - every set at the top of the range → add weight (5 lb, or the next weight you've used on odd-step cable stacks). The rep targets at the new weight come from your own history: how many reps you typically lose per 10% added (per exercise once it has 3+ jumps, otherwise your median across all lifts), plus any reps left in reserve last time by RPE. A small jump on an easy set keeps your reps; a big jump costs more. Targets stay within the rep range;
    - otherwise → same weight, one more rep on the weakest set (every set, if the last session's RPE was 8 or lower);
    - below the range two sessions running without improving → drop back one step;
    - no rep gains in 3 sessions at the same weight → deload ~10%;

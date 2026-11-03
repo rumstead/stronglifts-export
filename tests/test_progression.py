@@ -19,6 +19,8 @@ from lifting_data.progression import (
     load_config,
     muscle_for,
     plan_workouts,
+    post_increase_targets,
+    reps_lost_per_10pct,
     snap_rep_range,
 )
 
@@ -130,7 +132,45 @@ def test_top_of_range_on_every_set_moves_up_by_increment() -> None:
     rx = _analyze("Bench Press", sessions).prescription
     assert rx.action == "increase"
     assert rx.weight == 210
-    assert rx.target_reps == (5, 5, 5)
+    # A 2.4% jump costs well under a rep, so the targets stay at 8 instead of resetting to 5.
+    assert rx.target_reps == (8, 8, 8)
+
+
+def _targets(reps, rpe, weight, new_weight, per_10pct, low=5, high=12):
+    return post_increase_targets(reps, rpe, weight, new_weight, "weighted", 180.0, low, high, per_10pct)
+
+
+def test_post_increase_targets_scale_with_jump_size() -> None:
+    # Lifter who loses ~0.8 reps per 10%: a 5% jump keeps reps, a 33% jump costs ~3.
+    assert _targets([10, 10, 10], None, 95, 100, 0.8) == (10, 10, 10)
+    assert _targets([12, 12, 11], None, 15, 20, 0.8) == (9, 9, 8)
+
+
+def test_post_increase_targets_use_rpe_reserve() -> None:
+    # Same 15% jump: an easy RPE 7 session keeps more reps than a grinding RPE 10 one.
+    easy = _targets([8, 8, 8], 7.0, 200, 230, 2.0)
+    grind = _targets([8, 8, 8], 10.0, 200, 230, 2.0)  # low defaults to 5
+    # 15% jump at 2 reps per 10% costs 3 reps; RPE 7 adds back 2, RPE 10 takes 1 more.
+    assert easy == (7, 7, 7)
+    assert grind == (5, 5, 5)  # 4 predicted, held at the bottom of the range
+
+
+def test_post_increase_targets_stay_in_range_and_below_last_reps() -> None:
+    assert _targets([10, 10, 10], 9.0, 100, 200, 3.0, low=8, high=10) == (8, 8, 8)
+    assert _targets([10, 9, 9], 9.0, 100, 101, 0.5, low=6, high=12) == (10, 9, 9)
+
+
+def test_reps_lost_per_10pct_measured_from_history() -> None:
+    sessions = [
+        _session(0, [(100, 10), (100, 10)]),
+        _session(4, [(110, 9), (110, 9)]),  # +10%, -1 rep
+        _session(8, [(110, 10), (110, 10)]),
+        _session(12, [(121, 9), (121, 9)]),  # +10%, -1 rep
+        _session(16, [(121, 10), (121, 10)]),
+        _session(20, [(133.1, 9), (133.1, 9)]),  # +10%, -1 rep
+    ]
+    assert reps_lost_per_10pct(sessions, "weighted", 180.0) == pytest.approx(1.0)
+    assert reps_lost_per_10pct(sessions[:4], "weighted", 180.0) is None
 
 
 def test_within_range_adds_a_rep_to_the_weakest_set() -> None:
