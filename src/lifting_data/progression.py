@@ -573,7 +573,10 @@ def with_targets(
     elif rx.action == "add-load":
         goal = "Add weight or a harder variation once this is easy"
     elif rx.action == "increase":
-        goal = f"{low}+ every set still counts · {move} again at {high}×{n}"
+        if all(t >= high for t in rx.target_reps):
+            goal = f"Hit it → {w(next_up)} lb next time · {low}+ every set still counts"
+        else:
+            goal = f"{low}+ every set still counts · {move} again at {high}×{n}"
     else:
         goal = f"Hit {high} on all {n} sets → {w(next_up)} lb"
     return replace(rx, effort=EFFORT_BY_ACTION.get(rx.action, ""), goal=goal)
