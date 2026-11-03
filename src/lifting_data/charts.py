@@ -5,90 +5,103 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
+from .progression import (
+    STATUS_ORDER,
+    ExerciseAnalysis,
+    ProgressionConfig,
+    analyze_all,
+    muscle_for,
+    plan_workouts,
+    weekly_muscle_volume,
+)
 
-def _to_date(value: str) -> date:
-    """Parse a workout date that may include a time component."""
-    return date.fromisoformat(value.split("T")[0].split(" ")[0])
-
-
-def _linear_trend(x_ordinals: list[int], y_values: list[float]) -> tuple[float, float] | None:
-    n = len(x_ordinals)
-    if n < 2:
-        return None
-    mean_x = sum(x_ordinals) / n
-    mean_y = sum(y_values) / n
-    denom = sum((x - mean_x) ** 2 for x in x_ordinals)
-    if denom == 0:
-        return None
-    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(x_ordinals, y_values)) / denom
-    intercept = mean_y - slope * mean_x
-    return slope, intercept
+RECORD_REPS = (1, 3, 5, 8, 10, 12, 15)
 
 
-def _build_exercise_payload(
-    dates: list[str],
-    top_weights: list[float | None],
-    top_estimated: list[float | None],
-    total_volumes: list[float | None],
-    max_reps: list[int | None],
-) -> dict[str, object]:
-    """Build the per-exercise chart payload: raw series, PR progression, summary.
+def _records(analysis: ExerciseAnalysis) -> list[dict[str, object]]:
+    """Best weight achieved for at least N reps (least assistance for assisted lifts)."""
+    assisted = analysis.kind == "assisted"
+    records = []
+    for target in RECORD_REPS:
+        best: tuple[float, str, int] | None = None
+        for session in analysis.sessions:
+            for s in session.sets:
+                if s.set_type in ("warmup", "dropset") or s.reps < target:
+                    continue
+                if assisted and s.weight <= 0:
+                    continue  # blank assistance is ambiguous, not a record
+                better = best is None or (s.weight < best[0] if assisted else s.weight > best[0])
+                if better:
+                    best = (s.weight, session.started_at[:10], s.reps)
+        if best is not None:
+            records.append({"reps": target, "weight": best[0], "date": best[1], "actual_reps": best[2]})
+    return records
 
-    The PR progression is the running max of the per-session best Est. 1RM.
-    The summary is a short human-readable line with trend and stall detection.
-    """
-    pr_dates: list[str] = []
-    pr_values: list[float] = []
-    summary = ""
 
-    points = [(d, e) for d, e in zip(dates, top_estimated) if e is not None]
-    if points:
-        # Running best (PR progression) and the sessions that set a new all-time best.
-        running_max: float | None = None
-        pr_marker_dates: list[str] = []
-        for d, e in points:
-            if running_max is None or e > running_max:
-                running_max = e
-                pr_marker_dates.append(d)
-            pr_dates.append(d)
-            pr_values.append(running_max)
+def _summary(analysis: ExerciseAnalysis) -> str:
+    if analysis.kind == "assisted":
+        best = min(s.working_weight for s in analysis.sessions)
+        head = f"Least assistance {best:g} lb"
+    elif analysis.kind == "bodyweight":
+        head = f"Best set {max(max(s.reps) for s in analysis.sessions)} reps"
+    else:
+        head = f"Best Est. 1RM {max(analysis.scores):.0f} lb"
+    return f"{head} · {analysis.status}: {analysis.status_reason}"
 
-        # Linear trend over the valid Est. 1RM points.
-        ordinals = [_to_date(d).toordinal() for d, _ in points]
-        values = [e for _, e in points]
-        trend = _linear_trend(ordinals, values)
 
-        direction = ""
-        if trend is not None:
-            slope, _intercept = trend
-            per_month = slope * 30.44
-            if per_month > 0.1:
-                direction = f"\u25b2 +{per_month:.1f}/mo"
-            elif per_month < -0.1:
-                direction = f"\u25bc {per_month:.1f}/mo"
-            else:
-                direction = "\u25ac holding steady"
-
-        # Stall detection: days between the last PR and the most recent session.
-        days_since_pr = (_to_date(points[-1][0]) - _to_date(pr_marker_dates[-1])).days
-        stall = ""
-        if len(points) >= 4 and days_since_pr >= 42:
-            stall = f"  \u00b7  \u26a0 no new PR in {days_since_pr}d"
-
-        summary_parts = [f"Best Est. 1RM {max(values):.0f} lb"]
-        if direction:
-            summary_parts.append(direction)
-        summary = "   ".join(summary_parts) + stall
-
+def _exercise_payload(analysis: ExerciseAnalysis) -> dict[str, object]:
+    sessions = []
+    running_best: float | None = None
+    for session, score in zip(analysis.sessions, analysis.scores):
+        is_pr = running_best is None or score > running_best
+        running_best = score if running_best is None else max(running_best, score)
+        working_ids = {id(s) for s in session.working_sets}
+        sessions.append(
+            {
+                "date": session.started_at[:10],
+                "workout": session.workout_name,
+                "weight": session.working_weight,
+                "score": score,
+                "pr": is_pr,
+                "total": session.total_reps,
+                "sets": [
+                    [s.weight, s.reps, s.rpe, s.set_type, id(s) in working_ids]
+                    for s in session.sets
+                ],
+            }
+        )
+    p = analysis.prescription
     return {
-        "dates": dates,
-        "top_weights": top_weights,
-        "top_estimated": top_estimated,
-        "total_volumes": total_volumes,
-        "max_reps": max_reps,
-        "pr_dates": pr_dates,
-        "pr_values": pr_values,
-        "summary": summary,
+        "kind": analysis.kind,
+        "muscle": muscle_for(analysis.name),
+        "status": analysis.status,
+        "status_reason": analysis.status_reason,
+        "change_4w": analysis.change_4w,
+        "change_12w": analysis.change_12w,
+        "rep_range": [analysis.rep_range.low, analysis.rep_range.high],
+        "rep_range_source": analysis.rep_range.source,
+        "step": (
+            "weights you have used: " + ", ".join(f"{w:g}" for w in analysis.ladder)
+            if analysis.ladder
+            else f"+{analysis.increment:g} lb"
+        ),
+        "prescription": (
+            {
+                "action": p.action,
+                "weight": p.weight,
+                "targets": list(p.target_reps),
+                "text": p.describe(),
+                "reason": p.reason,
+                "short": p.short or p.reason,
+                "effort": p.effort,
+                "goal": p.goal,
+            }
+            if p
+            else None
+        ),
+        "records": _records(analysis),
+        "sessions": sessions,
+        "summary": _summary(analysis),
     }
 
 
@@ -98,204 +111,640 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Lifting Progress</title>
-  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      margin: 0;
-      padding: 12px;
-      background: #fafafa;
+    :root {
+      --bg: #f6f6f8; --card: #fff; --text: #1a202c; --muted: #64748b; --line: #e2e8f0;
+      --accent: #6b46c1; --accent-soft: #ede9fe;
+      --good: #15803d; --good-bg: #dcfce7; --warn: #b45309; --warn-bg: #fef3c7;
+      --bad: #b91c1c; --bad-bg: #fee2e2; --info: #1d4ed8; --info-bg: #dbeafe;
+      --neutral: #475569; --neutral-bg: #f1f5f9;
     }
-    .container { max-width: 720px; margin: 0 auto; }
-    .controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-    select {
-      font-size: 16px;
-      padding: 10px 12px;
-      border-radius: 6px;
-      border: 1px solid #ccc;
-      flex: 1;
-      min-width: 0;
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0; background: var(--bg); color: var(--text); }
+    .container { max-width: 760px; margin: 0 auto; padding: 0 12px 40px; }
+    header { position: sticky; top: 0; background: var(--bg); padding: 10px 0 8px; z-index: 5; }
+    .asof { color: var(--muted); font-size: 12px; margin: 0 2px 8px; }
+    .tabs { display: flex; gap: 4px; background: var(--card); border-radius: 10px; padding: 4px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+    .tabs button { flex: 1; border: 0; background: transparent; padding: 9px 4px; border-radius: 7px;
+      font-size: 14px; color: var(--muted); font-weight: 600; }
+    .tabs button.active { background: var(--accent); color: #fff; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .pills { display: flex; gap: 6px; overflow-x: auto; margin: 12px 0; padding-bottom: 2px; }
+    .pills button { white-space: nowrap; border: 1px solid var(--line); background: var(--card);
+      border-radius: 999px; padding: 7px 12px; font-size: 13px; color: var(--text); }
+    .pills button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    .pills .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; margin-left: 4px; color: var(--accent); }
+    .card { background: var(--card); border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      padding: 12px; margin-bottom: 10px; }
+    .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+    .row-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .ex-name { font-weight: 600; font-size: 15px; cursor: pointer; }
+    .ex-name:hover { color: var(--accent); }
+    .chip { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+    .chip.Progressing { color: var(--good); background: var(--good-bg); }
+    .chip.Holding, .chip.Archived { color: var(--neutral); background: var(--neutral-bg); }
+    .chip.Stalled { color: var(--warn); background: var(--warn-bg); }
+    .chip.Regressing { color: var(--bad); background: var(--bad-bg); }
+    .chip.Returning { color: var(--info); background: var(--info-bg); }
+    .rx { font-size: 22px; font-weight: 700; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+    .rx .action { font-size: 12px; font-weight: 600; color: var(--accent); margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
+    .reason { font-size: 13px; color: var(--text); margin: 2px 0 6px; }
+    .rx .up { color: var(--accent); }
+    .cue { font-size: 14px; color: var(--text); margin: 0 0 8px; }
+    .sets-grid { display: grid; gap: 2px 6px; align-items: baseline; background: var(--neutral-bg);
+      border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+    .sets-grid .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+    .sets-grid .tgt { font-size: 17px; font-weight: 700; }
+    .sets-grid .delta { font-size: 11px; font-weight: 600; color: var(--accent); }
+    .sets-grid .prev { font-size: 12px; color: var(--muted); }
+    .facts { font-size: 13px; display: grid; grid-template-columns: 64px 1fr; gap: 3px 8px; }
+    .facts > div { display: contents; }
+    .facts .k { color: var(--muted); font-size: 12px; padding-top: 1px; }
+    .rx .sets-count { font-size: 15px; font-weight: 600; color: var(--muted); }
+    .meta { font-size: 12px; color: var(--muted); }
+    .board-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px 58px 58px; gap: 8px; align-items: center;
+      padding: 9px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+    .board-row:last-child { border-bottom: 0; }
+    .board-row .name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .board-row .sub { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .board-head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; cursor: default; padding-top: 0; }
+    .pct { font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+    .pct.up { color: var(--good); } .pct.down { color: var(--bad); } .pct.flat { color: var(--muted); }
+    details summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 6px 2px; }
+    .controls { display: flex; align-items: center; gap: 8px; margin: 12px 0 6px; }
+    select { font-size: 16px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line);
+      background: var(--card); flex: 1; min-width: 0; }
+    .summary { color: var(--muted); font-size: 13px; margin: 0 2px 10px; }
+    .range-buttons { display: flex; gap: 6px; margin-bottom: 10px; }
+    .range-buttons button { flex: 1; padding: 7px 0; font-size: 13px; border: 1px solid var(--line);
+      background: var(--card); border-radius: 6px; color: var(--muted); }
+    .range-buttons button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+    th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    .set { display: inline-block; margin: 0 6px 2px 0; }
+    .set.extra { color: var(--muted); }
+    .rpe { color: var(--muted); font-size: 11px; }
+    .vol-row { display: grid; grid-template-columns: 92px 1fr 70px; gap: 10px; align-items: center; padding: 8px 0;
+      border-bottom: 1px solid var(--line); }
+    .vol-row:last-child { border-bottom: 0; }
+    .vol-name { font-size: 13px; font-weight: 600; }
+    .track { position: relative; height: 14px; background: var(--neutral-bg); border-radius: 7px; }
+    .band { position: absolute; top: 0; bottom: 0; background: var(--good-bg); border-radius: 7px; }
+    .marker { position: absolute; top: -3px; width: 4px; height: 20px; background: var(--accent); border-radius: 2px; margin-left: -2px; }
+    .vol-num { font-size: 12px; text-align: right; color: var(--muted); }
+    .vol-num b { color: var(--text); font-size: 14px; }
+    .legend { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
+    .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+    .empty { color: var(--muted); font-size: 14px; padding: 16px 4px; }
+    @media (max-width: 480px) {
+      .board-row { grid-template-columns: minmax(0, 1fr) 64px 56px; }
+      .board-row .c12 { display: none; }
+      .vol-row { grid-template-columns: 80px 1fr 60px; }
     }
-    .summary { color: #4a5568; font-size: 14px; margin: 0 2px 10px; min-height: 1em; }
-    .range-buttons { display: flex; gap: 6px; margin-bottom: 12px; }
-    .range-buttons button {
-      flex: 1;
-      padding: 7px 0;
-      font-size: 13px;
-      border: 1px solid #ccc;
-      background: #fff;
-      border-radius: 6px;
-      color: #4a5568;
-    }
-    .range-buttons button.active { background: #6b46c1; border-color: #6b46c1; color: #fff; }
-    .card {
-      background: #fff;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      padding: 10px 6px 2px;
-      margin-bottom: 14px;
-    }
-    .card h3 { margin: 0 0 2px 8px; font-size: 15px; font-weight: 600; color: #1a202c; }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="controls">
-      <label for="exercise-select">Exercise:</label>
-      <select id="exercise-select"></select>
-    </div>
-    <div class="summary" id="summary"></div>
-    <div class="range-buttons" id="range-buttons">
-      <button data-months="1">1M</button>
-      <button data-months="3">3M</button>
-      <button data-months="6">6M</button>
-      <button data-months="12">1Y</button>
-      <button data-months="0" class="active">All</button>
-    </div>
-    <div id="charts"></div>
+    <header>
+      <div class="asof" id="asof"></div>
+      <nav class="tabs" id="tabs">
+        <button data-view="next" class="active">Next</button>
+        <button data-view="board">Progress</button>
+        <button data-view="exercise">Exercise</button>
+        <button data-view="volume">Volume</button>
+      </nav>
+    </header>
+
+    <section class="view active" id="view-next">
+      <div class="pills" id="workout-pills"></div>
+      <div id="next-list"></div>
+    </section>
+
+    <section class="view" id="view-board">
+      <div class="card" id="board-active"></div>
+      <details id="board-archived-wrap"><summary id="board-archived-label"></summary>
+        <div class="card" id="board-archived"></div>
+      </details>
+    </section>
+
+    <section class="view" id="view-exercise">
+      <div class="controls">
+        <label for="exercise-select">Exercise:</label>
+        <select id="exercise-select"></select>
+      </div>
+      <div class="summary" id="summary"></div>
+      <div class="card" id="exercise-next"></div>
+      <div class="range-buttons" id="range-buttons">
+        <button data-months="1">1M</button>
+        <button data-months="3">3M</button>
+        <button data-months="6">6M</button>
+        <button data-months="12" class="active">1Y</button>
+        <button data-months="0">All</button>
+      </div>
+      <div class="card"><h3 id="trend-title">Strength trend (Est. 1RM, lb)</h3><div id="chart-trend"></div></div>
+      <div class="card"><h3>Reps at working weight</h3>
+        <div class="meta">Total working reps per session. Colour changes when the weight changes, so rep gains at the same weight show as rising bars.</div>
+        <div id="chart-reps"></div></div>
+      <div class="card"><h3>Rep records</h3><div id="records"></div></div>
+      <div class="card"><h3>Recent sessions</h3><div id="recent"></div></div>
+    </section>
+
+    <section class="view" id="view-volume">
+      <div class="card">
+        <h3>Hard sets per muscle per week</h3>
+        <div class="legend"><span style="background: var(--good-bg)"></span>approx. productive range (RP guideline)
+          &nbsp; <span style="background: var(--accent)"></span>your 4-week average</div>
+        <div id="volume-rows"></div>
+      </div>
+      <div class="card"><h3>Weekly sets, last 12 weeks</h3><div id="chart-volume"></div></div>
+      <div class="meta" id="volume-unmapped"></div>
+    </section>
   </div>
   <script>
-    const chartData = __CHART_DATA__;
-    const exerciseNames = __EXERCISE_NAMES__;
-
+    const DATA = __DATA__;
+    const exerciseNames = DATA.exercise_names;
+    const chartData = DATA.exercises;
+    const STATUS_ORDER = DATA.status_order;
     const PURPLE = '#7c3aed';
-    const GREEN = '#38a169';
+    const WEIGHT_COLORS = ['#7c3aed', '#0d9488', '#db2777', '#2563eb', '#d97706', '#4f46e5'];
+    const MUSCLE_COLORS = ['#7c3aed', '#2563eb', '#0891b2', '#0d9488', '#16a34a', '#65a30d',
+      '#ca8a04', '#d97706', '#dc2626', '#db2777', '#9333ea', '#64748b', '#94a3b8'];
+    const CONFIG = { displayModeBar: false, responsive: true };
 
-    // One simple chart per metric, like the Strong app.
-    const CHART_DEFS = [
-      { title: 'Best Set (Est. 1RM, lb)', kind: 'line', x: d => d.dates, y: d => d.top_estimated },
-      { title: 'Best Set (Max Weight, lb)', kind: 'line', x: d => d.dates, y: d => d.top_weights },
-      { title: 'Total Volume (lb-reps)', kind: 'bar', x: d => d.dates, y: d => d.total_volumes },
-      { title: 'PR Progression (as 1RM, lb)', kind: 'step', x: d => d.pr_dates, y: d => d.pr_values },
-      { title: 'Max Consecutive Reps', kind: 'line', x: d => d.dates, y: d => d.max_reps }
-    ];
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== undefined && text !== null) node.textContent = text;
+      return node;
+    }
+    function fmt(w) { return (Math.round(w * 10) / 10).toString(); }
+    function fmtDate(d) {
+      const dt = new Date(d + 'T00:00:00');
+      return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+    function setsText(session, workingOnly) {
+      return session.sets.filter(s => !workingOnly || s[4])
+        .map(s => fmt(s[0]) + '×' + s[1] + (s[2] !== null ? ' @' + s[2] : '')).join(', ');
+    }
+    function chip(status) { return el('span', 'chip ' + status, status); }
 
+    document.getElementById('asof').textContent = 'Updated ' + fmtDate(DATA.as_of);
+
+    // ---- Tabs ----
+    const tabButtons = document.querySelectorAll('#tabs button');
+    function showView(name) {
+      tabButtons.forEach(b => b.classList.toggle('active', b.dataset.view === name));
+      document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+      if (name === 'exercise') renderCharts();
+      if (name === 'volume') renderVolumeChart();
+      window.scrollTo(0, 0);
+    }
+    tabButtons.forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
+    function openExercise(name) {
+      select.value = name;
+      showView('exercise');
+    }
+
+    // ---- Next workout ----
+    function prescriptionBlock(name, data, compact) {
+      const wrap = el('div');
+      const p = data.prescription;
+      if (!p) {
+        wrap.appendChild(el('div', 'meta', 'Not trained recently — no recommendation.'));
+        return wrap;
+      }
+      const rx = el('div', 'rx', p.text);
+      const labels = { increase: 'move up', hold: 'hold', 'add-reps': 'add reps', deload: 'deload',
+        'drop-back': 'drop back', 'return': 'ease back', 'add-load': 'add load' };
+      rx.appendChild(el('span', 'action', labels[p.action] || p.action));
+      wrap.appendChild(rx);
+      wrap.appendChild(el('div', 'reason', p.reason));
+      if (p.effort) wrap.appendChild(el('div', 'meta', 'Effort: ' + p.effort + ' · Next step: ' + p.goal));
+      const last = data.sessions[data.sessions.length - 1];
+      wrap.appendChild(el('div', 'meta',
+        'Last: ' + setsText(last, false) + ' · ' + fmtDate(last.date) +
+        ' · Range ' + data.rep_range[0] + '–' + data.rep_range[1] + ' · Steps ' + data.step));
+      return wrap;
+    }
+
+    // Statuses worth flagging on the Next tab; the rest stay quiet.
+    const ATTENTION = ['Stalled', 'Regressing', 'Returning'];
+
+    function compactBlock(data) {
+      const wrap = el('div');
+      const p = data.prescription;
+      if (!p) { wrap.appendChild(el('div', 'meta', 'Not trained recently.')); return wrap; }
+      const last = data.sessions[data.sessions.length - 1];
+      const rx = el('div', 'rx');
+      const sameWeight = p.weight === last.weight;
+      rx.appendChild(el('span', sameWeight ? '' : 'up', p.weight === 0 ? 'Bodyweight' : fmt(p.weight) + ' lb'));
+      rx.appendChild(el('span', 'sets-count', ' · ' + p.targets.length + ' sets'));
+      wrap.appendChild(rx);
+      wrap.appendChild(el('div', 'cue', p.short));
+      wrap.appendChild(setGrid(p, last));
+      const facts = el('div', 'facts');
+      [['Effort', p.effort], ['Next step', p.goal]].forEach(([k, v]) => {
+        if (!v) return;
+        const row = el('div');
+        row.appendChild(el('span', 'k', k));
+        row.appendChild(el('span', null, v));
+        facts.appendChild(row);
+      });
+      wrap.appendChild(facts);
+      return wrap;
+    }
+
+    // Per-set targets with last session's reps underneath, so each set has a number to beat.
+    function setGrid(p, last) {
+      // Last session's sets in order (warm-ups and drop sets left out), including any off-weight top set.
+      const prevSets = last.sets.filter(s => s[3] !== 'warmup' && s[3] !== 'dropset');
+      const grid = el('div', 'sets-grid');
+      grid.style.gridTemplateColumns = '48px repeat(' + p.targets.length + ', 1fr)';
+      grid.appendChild(el('div', 'k', ''));
+      p.targets.forEach((_, i) => grid.appendChild(el('div', 'k', 'Set ' + (i + 1))));
+      grid.appendChild(el('div', 'k', 'Target'));
+      p.targets.forEach((r, i) => {
+        const prev = prevSets[i];
+        const cell = el('div', 'tgt', String(r));
+        if (prev && prev[0] === p.weight && r > prev[1]) cell.appendChild(el('span', 'delta', ' +' + (r - prev[1])));
+        grid.appendChild(cell);
+      });
+      grid.appendChild(el('div', 'k', 'Last'));
+      p.targets.forEach((_, i) => {
+        const prev = prevSets[i];
+        const text = !prev ? '–' : (prev[0] === p.weight ? String(prev[1]) : fmt(prev[0]) + '×' + prev[1]) +
+          (prev[2] !== null ? ' @' + prev[2] : '');
+        grid.appendChild(el('div', 'prev', text));
+      });
+      return grid;
+    }
+
+    function renderNext() {
+      const pills = document.getElementById('workout-pills');
+      const list = document.getElementById('next-list');
+      if (!DATA.workouts.length) {
+        list.appendChild(el('div', 'empty', 'No workouts in the last 60 days.'));
+        return;
+      }
+      let current = DATA.next_workout || DATA.workouts[0].name;
+      function draw() {
+        pills.innerHTML = '';
+        DATA.workouts.forEach(w => {
+          const b = el('button', w.name === current ? 'active' : '', w.name);
+          if (w.name === DATA.next_workout) b.appendChild(el('span', 'tag', 'up next'));
+          b.addEventListener('click', () => { current = w.name; draw(); });
+          pills.appendChild(b);
+        });
+        list.innerHTML = '';
+        const plan = DATA.workouts.find(w => w.name === current);
+        list.appendChild(el('div', 'meta', 'Last done ' + fmtDate(plan.last_date)));
+        list.lastChild.style.margin = '0 2px 8px';
+        plan.exercises.forEach(name => {
+          const data = chartData[name];
+          if (!data) return;
+          const card = el('div', 'card');
+          const head = el('div', 'row-head');
+          const title = el('span', 'ex-name', name);
+          title.addEventListener('click', () => openExercise(name));
+          head.appendChild(title);
+          if (ATTENTION.includes(data.status)) head.appendChild(chip(data.status));
+          card.appendChild(head);
+          card.appendChild(compactBlock(data));
+          list.appendChild(card);
+        });
+      }
+      draw();
+    }
+
+    // ---- Progress board ----
+    function sparkline(values) {
+      const w = 64, h = 26, pad = 3;
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('width', w); svg.setAttribute('height', h);
+      svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+      if (values.length < 2) return svg;
+      const min = Math.min(...values), max = Math.max(...values);
+      const span = max - min || 1;
+      const pts = values.map((v, i) => [pad + i * (w - 2 * pad) / (values.length - 1), h - pad - (v - min) * (h - 2 * pad) / span]);
+      const path = document.createElementNS(ns, 'polyline');
+      path.setAttribute('points', pts.map(p => p.join(',')).join(' '));
+      path.setAttribute('fill', 'none'); path.setAttribute('stroke', PURPLE); path.setAttribute('stroke-width', '1.5');
+      svg.appendChild(path);
+      const dot = document.createElementNS(ns, 'circle');
+      const last = pts[pts.length - 1];
+      dot.setAttribute('cx', last[0]); dot.setAttribute('cy', last[1]); dot.setAttribute('r', 2.5); dot.setAttribute('fill', PURPLE);
+      svg.appendChild(dot);
+      return svg;
+    }
+    function pctCell(value, cls) {
+      const node = el('div', 'pct ' + (cls || ''));
+      if (value === null || value === undefined) { node.textContent = '–'; node.classList.add('flat'); return node; }
+      node.textContent = (value > 0 ? '+' : '') + value.toFixed(1) + '%';
+      node.classList.add(value >= 1 ? 'up' : value <= -1 ? 'down' : 'flat');
+      return node;
+    }
+    function recentScores(data) {
+      const cutoff = new Date(DATA.as_of + 'T00:00:00');
+      cutoff.setDate(cutoff.getDate() - 84);
+      const iso = cutoff.toISOString().slice(0, 10);
+      let s = data.sessions.filter(x => x.date >= iso);
+      if (s.length < 2) s = data.sessions.slice(-6);
+      return s.map(x => data.kind === 'assisted' ? -x.weight : x.score);
+    }
+    function boardRow(name) {
+      const data = chartData[name];
+      const row = el('div', 'board-row');
+      const left = el('div');
+      const top = el('div', 'name', name);
+      left.appendChild(top);
+      const sub = el('div', 'sub');
+      sub.appendChild(chip(data.status));
+      sub.appendChild(document.createTextNode(' ' + (data.prescription ? 'Next: ' + data.prescription.text : data.status_reason)));
+      left.appendChild(sub);
+      row.appendChild(left);
+      row.appendChild(sparkline(recentScores(data)));
+      row.appendChild(pctCell(data.change_4w));
+      row.appendChild(pctCell(data.change_12w, 'c12'));
+      row.addEventListener('click', () => openExercise(name));
+      return row;
+    }
+    function renderBoard() {
+      const active = exerciseNames.filter(n => chartData[n].status !== 'Archived');
+      const archived = exerciseNames.filter(n => chartData[n].status === 'Archived');
+      active.sort((a, b) => STATUS_ORDER.indexOf(chartData[a].status) - STATUS_ORDER.indexOf(chartData[b].status));
+      const root = document.getElementById('board-active');
+      const head = el('div', 'board-row board-head');
+      ['Exercise', '12 weeks', '4 wk', '12 wk'].forEach((t, i) => {
+        const c = el('div', i >= 2 ? 'pct' + (i === 3 ? ' c12' : '') : '', t);
+        head.appendChild(c);
+      });
+      root.appendChild(head);
+      if (!active.length) root.appendChild(el('div', 'empty', 'Nothing trained in the last 60 days.'));
+      active.forEach(n => root.appendChild(boardRow(n)));
+      document.getElementById('board-archived-label').textContent = 'Archived — not trained in 60+ days (' + archived.length + ')';
+      const arch = document.getElementById('board-archived');
+      archived.forEach(n => arch.appendChild(boardRow(n)));
+      if (!archived.length) document.getElementById('board-archived-wrap').style.display = 'none';
+    }
+
+    // ---- Exercise detail ----
     const select = document.getElementById('exercise-select');
-    exerciseNames.forEach(function(name) {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      select.appendChild(opt);
-    });
+    (function buildSelect() {
+      const active = el('optgroup'); active.label = 'Active';
+      const archived = el('optgroup'); archived.label = 'Archived';
+      exerciseNames.forEach(name => {
+        const opt = el('option', null, name);
+        opt.value = name;
+        (chartData[name].status === 'Archived' ? archived : active).appendChild(opt);
+      });
+      if (active.children.length) select.appendChild(active);
+      if (archived.children.length) select.appendChild(archived);
+    })();
     select.addEventListener('change', renderCharts);
 
-    // Build one card per chart.
-    const chartsRoot = document.getElementById('charts');
-    CHART_DEFS.forEach(function(def, i) {
-      const card = document.createElement('div');
-      card.className = 'card';
-      const heading = document.createElement('h3');
-      heading.textContent = def.title;
-      card.appendChild(heading);
-      const chartDiv = document.createElement('div');
-      chartDiv.id = 'chart-' + i;
-      card.appendChild(chartDiv);
-      chartsRoot.appendChild(card);
-    });
-
-    // Global time-range toggle applied to every chart.
-    let currentMonths = 0;
+    let currentMonths = 12;
     const rangeButtons = document.querySelectorAll('#range-buttons button');
-    rangeButtons.forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        rangeButtons.forEach(function(b) { b.classList.remove('active'); });
-        btn.classList.add('active');
-        currentMonths = parseInt(btn.dataset.months, 10);
-        renderCharts();
-      });
-    });
-
+    rangeButtons.forEach(btn => btn.addEventListener('click', () => {
+      rangeButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentMonths = parseInt(btn.dataset.months, 10);
+      renderCharts();
+    }));
     function rangeCutoff() {
       if (!currentMonths) return null;
-      const dt = new Date();
+      const dt = new Date(DATA.as_of + 'T00:00:00');
       dt.setMonth(dt.getMonth() - currentMonths);
       return dt.toISOString().slice(0, 10);
     }
-
-    function filterXY(x, y, cutoff) {
-      if (!cutoff) return [x, y];
-      const fx = [], fy = [];
-      for (let i = 0; i < x.length; i++) {
-        if (x[i] >= cutoff) { fx.push(x[i]); fy.push(y[i]); }
-      }
-      return [fx, fy];
-    }
-
-    function makeTrace(kind, x, y) {
-      if (kind === 'bar') {
-        return {
-          x: x, y: y, type: 'bar',
-          marker: { color: PURPLE, opacity: 0.75 },
-          hovertemplate: '%{x|%b %d, %Y}<br>%{y}<extra></extra>'
-        };
-      }
-      if (kind === 'step') {
-        return {
-          x: x, y: y, mode: 'lines',
-          line: { color: GREEN, width: 2, shape: 'hv' },
-          hovertemplate: '%{x|%b %d, %Y}<br>%{y}<extra></extra>'
-        };
-      }
-      return {
-        x: x, y: y, mode: 'lines+markers',
-        line: { color: PURPLE, width: 2 },
-        marker: { size: 5, color: PURPLE },
-        hovertemplate: '%{x|%b %d, %Y}<br>%{y}<extra></extra>'
-      };
-    }
-
-    function baseLayout() {
-      return {
-        height: 230,
-        margin: { t: 8, b: 32, l: 46, r: 10 },
-        showlegend: false,
-        xaxis: { fixedrange: true, tickfont: { size: 11 }, gridcolor: '#eee' },
+    function baseLayout(extra) {
+      return Object.assign({
+        height: 240, margin: { t: 8, b: 32, l: 46, r: 10 }, showlegend: false,
+        xaxis: { fixedrange: true, tickfont: { size: 11 }, gridcolor: '#eee', type: 'date' },
         yaxis: { fixedrange: true, tickfont: { size: 11 }, gridcolor: '#eee' },
-        plot_bgcolor: '#fff',
-        paper_bgcolor: '#fff',
-        bargap: 0.4
-      };
+        plot_bgcolor: '#fff', paper_bgcolor: '#fff', bargap: 0.25
+      }, extra || {});
+    }
+    function rolling(values, n) {
+      return values.map((_, i) => {
+        const win = values.slice(Math.max(0, i - n + 1), i + 1);
+        return win.reduce((a, b) => a + b, 0) / win.length;
+      });
     }
 
-    const CONFIG = { displayModeBar: false, responsive: true };
+    function renderTrend(data, sessions) {
+      const x = sessions.map(s => s.date);
+      const hover = sessions.map(s => setsText(s, true));
+      let traces, layout;
+      if (data.kind === 'assisted') {
+        document.getElementById('trend-title').textContent = 'Assistance (lb, lower is better)';
+        traces = [{ x: x, y: sessions.map(s => s.weight), mode: 'lines+markers', line: { color: PURPLE, width: 2, shape: 'hv' },
+          marker: { size: 6, color: PURPLE }, text: hover, hovertemplate: '%{x|%b %d, %Y}<br>%{text}<extra></extra>' }];
+        layout = baseLayout({ yaxis: { fixedrange: true, autorange: 'reversed', tickfont: { size: 11 }, gridcolor: '#eee' } });
+      } else {
+        document.getElementById('trend-title').textContent = data.kind === 'bodyweight'
+          ? 'Strength trend (relative score)' : 'Strength trend (Est. 1RM, lb)';
+        const y = sessions.map(s => s.score);
+        const prs = sessions.filter(s => s.pr);
+        traces = [
+          { x: x, y: y, mode: 'markers', marker: { size: 6, color: PURPLE, opacity: 0.55 }, text: hover,
+            hovertemplate: '%{x|%b %d, %Y}<br>Est. 1RM %{y:.0f}<br>%{text}<extra></extra>' },
+          { x: x, y: rolling(y, 5), mode: 'lines', line: { color: PURPLE, width: 2.5, shape: 'spline' }, hoverinfo: 'skip' },
+          { x: prs.map(s => s.date), y: prs.map(s => s.score), mode: 'markers',
+            marker: { symbol: 'star', size: 11, color: '#d97706' }, hovertemplate: 'PR %{y:.0f}<extra></extra>' }
+        ];
+        layout = baseLayout();
+      }
+      Plotly.react('chart-trend', traces, layout, CONFIG);
+    }
+
+    function renderReps(data, sessions) {
+      const weights = [];
+      sessions.forEach(s => { if (!weights.includes(s.weight)) weights.push(s.weight); });
+      let band = -1, prev = null;
+      const colors = sessions.map(s => {
+        if (s.weight !== prev) { band += 1; prev = s.weight; }
+        return WEIGHT_COLORS[band % WEIGHT_COLORS.length];
+      });
+      const trace = {
+        x: sessions.map(s => s.date), y: sessions.map(s => s.total), type: 'bar',
+        marker: { color: colors },
+        text: sessions.map(s => fmt(s.weight)), textposition: 'inside', insidetextanchor: 'start',
+        textfont: { color: '#fff', size: 10 },
+        customdata: sessions.map(s => setsText(s, true)),
+        hovertemplate: '%{x|%b %d, %Y}<br>%{customdata}<br>%{y} reps<extra></extra>'
+      };
+      Plotly.react('chart-reps', [trace], baseLayout(), CONFIG);
+    }
+
+    function renderRecords(data) {
+      const root = document.getElementById('records');
+      root.innerHTML = '';
+      if (!data.records.length) { root.appendChild(el('div', 'empty', 'No records yet.')); return; }
+      const table = el('table');
+      const head = el('tr');
+      ['Reps', data.kind === 'assisted' ? 'Least assistance' : 'Best weight', 'Date'].forEach(t => head.appendChild(el('th', null, t)));
+      table.appendChild(head);
+      data.records.forEach(r => {
+        const tr = el('tr');
+        tr.appendChild(el('td', null, r.reps + '+'));
+        tr.appendChild(el('td', null, fmt(r.weight) + ' lb × ' + r.actual_reps));
+        tr.appendChild(el('td', null, fmtDate(r.date)));
+        table.appendChild(tr);
+      });
+      root.appendChild(table);
+    }
+
+    function renderRecent(data) {
+      const root = document.getElementById('recent');
+      root.innerHTML = '';
+      const table = el('table');
+      const head = el('tr');
+      ['Date', 'Sets (weight × reps @RPE)'].forEach(t => head.appendChild(el('th', null, t)));
+      table.appendChild(head);
+      data.sessions.slice(-6).reverse().forEach(s => {
+        const tr = el('tr');
+        tr.appendChild(el('td', null, fmtDate(s.date)));
+        const td = el('td');
+        s.sets.forEach(set => {
+          const span = el('span', 'set' + (set[4] ? '' : ' extra'), fmt(set[0]) + '×' + set[1]);
+          if (set[2] !== null) span.appendChild(el('span', 'rpe', ' @' + set[2]));
+          if (set[3] !== 'normal') span.appendChild(el('span', 'rpe', ' ' + set[3]));
+          td.appendChild(span);
+        });
+        tr.appendChild(td);
+        table.appendChild(tr);
+      });
+      root.appendChild(table);
+    }
 
     function renderCharts() {
       const data = chartData[select.value];
       if (!data) return;
       document.getElementById('summary').textContent = data.summary || '';
+      const next = document.getElementById('exercise-next');
+      next.innerHTML = '';
+      next.appendChild(el('h3', null, 'Next session'));
+      next.appendChild(prescriptionBlock(select.value, data));
       const cutoff = rangeCutoff();
-      CHART_DEFS.forEach(function(def, i) {
-        const filtered = filterXY(def.x(data) || [], def.y(data) || [], cutoff);
-        Plotly.react('chart-' + i, [makeTrace(def.kind, filtered[0], filtered[1])], baseLayout(), CONFIG);
-      });
+      let sessions = data.sessions;
+      if (cutoff) sessions = sessions.filter(s => s.date >= cutoff);
+      if (!document.getElementById('view-exercise').classList.contains('active')) return;
+      renderTrend(data, sessions);
+      renderReps(data, sessions);
+      renderRecords(data);
+      renderRecent(data);
     }
 
+    // ---- Volume ----
+    function renderVolumeRows() {
+      const v = DATA.volume;
+      const root = document.getElementById('volume-rows');
+      if (!v.muscles.length) { root.appendChild(el('div', 'empty', 'No sets in the last 12 weeks.')); return; }
+      // Average over the last 4 complete weeks (exclude the current, partial week).
+      const n = v.weeks.length;
+      const scaleMax = Math.max(24, ...v.muscles.map(m => Math.max(...v.sets[m]))) * 1.05;
+      v.muscles.forEach(m => {
+        const full = v.sets[m].slice(Math.max(0, n - 5), n - 1);
+        const avg = full.length ? full.reduce((a, b) => a + b, 0) / full.length : 0;
+        const row = el('div', 'vol-row');
+        row.appendChild(el('div', 'vol-name', m));
+        const track = el('div', 'track');
+        const t = v.targets[m];
+        if (t) {
+          const band = el('div', 'band');
+          band.style.left = (t[0] / scaleMax * 100) + '%';
+          band.style.width = ((t[1] - t[0]) / scaleMax * 100) + '%';
+          track.appendChild(band);
+        }
+        const marker = el('div', 'marker');
+        marker.style.left = Math.min(100, avg / scaleMax * 100) + '%';
+        track.appendChild(marker);
+        row.appendChild(track);
+        const num = el('div', 'vol-num');
+        num.appendChild(el('b', null, avg.toFixed(1)));
+        num.appendChild(document.createTextNode(' /wk'));
+        num.appendChild(el('div', null, 'this wk ' + v.sets[m][n - 1]));
+        row.appendChild(num);
+        root.appendChild(row);
+      });
+      if (v.unmapped.length) {
+        document.getElementById('volume-unmapped').textContent = 'Counted as "Other": ' + v.unmapped.join(', ');
+      }
+    }
+    function renderVolumeChart() {
+      const v = DATA.volume;
+      if (!v.muscles.length) return;
+      const traces = v.muscles.map((m, i) => ({
+        x: v.weeks, y: v.sets[m], name: m, type: 'bar',
+        marker: { color: MUSCLE_COLORS[i % MUSCLE_COLORS.length] },
+        hovertemplate: m + ': %{y} sets<extra>week of %{x|%b %d}</extra>'
+      }));
+      Plotly.react('chart-volume', traces, baseLayout({
+        height: 300, barmode: 'stack', showlegend: true,
+        legend: { orientation: 'h', y: -0.2, font: { size: 11 } }, margin: { t: 8, b: 70, l: 36, r: 10 }
+      }), CONFIG);
+    }
+
+    renderNext();
+    renderBoard();
+    renderVolumeRows();
     if (exerciseNames.length > 0) {
+      select.value = exerciseNames.find(n => chartData[n].status !== 'Archived') || exerciseNames[0];
       renderCharts();
     }
+    if (DATA.single_exercise) openExercise(exerciseNames[0]);
   </script>
 </body>
 </html>"""
 
 
-def _render_page(chart_data: dict[str, dict[str, object]], output_path: str) -> None:
-    """Write the self-contained multi-chart HTML page for the given exercises."""
+def _json_default(obj: object) -> object:
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    if hasattr(obj, "__float__"):
+        return float(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-    def _json_default(obj: object) -> object:
-        if hasattr(obj, "isoformat"):
-            return obj.isoformat()
-        if hasattr(obj, "__float__"):
-            return float(obj)
-        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-    def _escape(payload: object) -> str:
-        # Escape JSON for safe embedding in <script> tags
-        return json.dumps(payload, default=_json_default).replace("</", "<\\/").replace("<!--", "<\\!--")
-
-    html_content = _PAGE_TEMPLATE.replace("__CHART_DATA__", _escape(chart_data)).replace(
-        "__EXERCISE_NAMES__", _escape(list(chart_data.keys()))
+def _escape(payload: object) -> str:
+    """Serialize JSON for safe embedding inside a <script> tag."""
+    return (
+        json.dumps(payload, default=_json_default)
+        .replace("</", "<\\/")
+        .replace("<!--", "<\\!--")
     )
 
+
+def _build_page_data(
+    connection: sqlite3.Connection,
+    analyses: dict[str, ExerciseAnalysis],
+    as_of: date,
+    single_exercise: bool = False,
+) -> dict[str, object]:
+    plans, next_workout = plan_workouts(connection, analyses, as_of)
+    # exercise_names comes first so the most-recent-first order appears first in the page.
+    return {
+        "exercise_names": list(analyses.keys()),
+        "exercises": {name: _exercise_payload(a) for name, a in analyses.items()},
+        "as_of": as_of.isoformat(),
+        "status_order": list(STATUS_ORDER),
+        "workouts": [
+            {"name": p.name, "last_date": p.last_date, "exercises": p.exercises} for p in plans
+        ],
+        "next_workout": next_workout,
+        "volume": weekly_muscle_volume(analyses, as_of),
+        "single_exercise": single_exercise,
+    }
+
+
+def _write_page(page_data: dict[str, object], output_path: str) -> None:
+    html_content = _PAGE_TEMPLATE.replace("__DATA__", _escape(page_data))
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(html_content, encoding="utf-8")
@@ -307,46 +756,17 @@ def generate_exercise_progress_chart(
     output_path: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    config: ProgressionConfig | None = None,
+    as_of: date | None = None,
 ) -> int:
-    filters = ["exercise_name = ?"]
-    values: list[object] = [exercise_name]
-
-    if start_date:
-        filters.append("workout_date >= ?")
-        values.append(start_date)
-    if end_date:
-        filters.append("workout_date <= ?")
-        values.append(end_date)
-
-    where_clause = " AND ".join(filters)
-
-    query = f"""
-    SELECT
-      workout_date,
-      MAX(weight) AS top_weight,
-      MAX(estimated_1rm) AS top_estimated_1rm,
-      SUM(volume) AS total_volume,
-      MAX(reps) AS max_reps
-    FROM sets
-    WHERE {where_clause}
-    GROUP BY workout_date
-    ORDER BY workout_date
-    """
-
-    rows = connection.execute(query, values).fetchall()
-    if not rows:
+    """Write a dashboard page focused on one exercise. Returns its session count."""
+    as_of = as_of or date.today()
+    analyses = analyze_all(connection, config, as_of, start_date, end_date)
+    if exercise_name not in analyses:
         raise ValueError(f"No data found for exercise: {exercise_name}")
-
-    payload = _build_exercise_payload(
-        [row["workout_date"] for row in rows],
-        [row["top_weight"] for row in rows],
-        [row["top_estimated_1rm"] for row in rows],
-        [row["total_volume"] for row in rows],
-        [row["max_reps"] for row in rows],
-    )
-
-    _render_page({exercise_name: payload}, output_path)
-    return len(rows)
+    focused = {exercise_name: analyses[exercise_name]}
+    _write_page(_build_page_data(connection, focused, as_of, single_exercise=True), output_path)
+    return len(focused[exercise_name].sessions)
 
 
 def generate_all_exercises_page(
@@ -354,97 +774,16 @@ def generate_all_exercises_page(
     output_path: str,
     start_date: str | None = None,
     end_date: str | None = None,
+    config: ProgressionConfig | None = None,
+    as_of: date | None = None,
 ) -> int:
-    """Generate a single HTML page with a dropdown to select exercises.
+    """Write the full dashboard (next workout, progress board, exercise detail, volume).
 
-    Exercises are ordered by most recent workout date (descending).
-    Default drag mode is pan instead of zoom.
+    Exercises are ordered by most recent workout first. Returns the exercise count.
     """
-    # Get exercises ordered by most recent data (respecting date filters)
-    exercise_filters = ["(reps > 0 OR weight > 0)"]
-    exercise_values: list[object] = []
-    if start_date:
-        exercise_filters.append("workout_date >= ?")
-        exercise_values.append(start_date)
-    if end_date:
-        exercise_filters.append("workout_date <= ?")
-        exercise_values.append(end_date)
-
-    exercise_where = " AND ".join(exercise_filters)
-    exercises_query = f"""
-    SELECT exercise_name, MAX(workout_date) AS last_date
-    FROM sets
-    WHERE {exercise_where}
-    GROUP BY exercise_name
-    ORDER BY last_date DESC, exercise_name ASC
-    """
-    exercises = connection.execute(exercises_query, exercise_values).fetchall()
-    if not exercises:
-        raise ValueError("No exercise data found in the database")
-
-    exercise_names = [row["exercise_name"] for row in exercises]
-
-    # Build chart data for all exercises in a single query
-    filters = ["(reps > 0 OR weight > 0)"]
-    values: list[object] = []
-    if start_date:
-        filters.append("workout_date >= ?")
-        values.append(start_date)
-    if end_date:
-        filters.append("workout_date <= ?")
-        values.append(end_date)
-
-    where_clause = " AND ".join(filters)
-    query = f"""
-    SELECT
-      exercise_name,
-      workout_date,
-      MAX(weight) AS top_weight,
-      MAX(estimated_1rm) AS top_estimated_1rm,
-      SUM(volume) AS total_volume,
-      MAX(reps) AS max_reps
-    FROM sets
-    WHERE {where_clause}
-    GROUP BY exercise_name, workout_date
-    ORDER BY exercise_name, workout_date
-    """
-    rows = connection.execute(query, values).fetchall()
-
-    # Group rows by exercise, preserving the most-recent-first ordering
-    all_chart_data: dict[str, dict] = {}
-    for row in rows:
-        name = row["exercise_name"]
-        if name not in all_chart_data:
-            all_chart_data[name] = {
-                "dates": [],
-                "top_weights": [],
-                "top_estimated": [],
-                "total_volumes": [],
-                "max_reps": [],
-            }
-        all_chart_data[name]["dates"].append(row["workout_date"])
-        all_chart_data[name]["top_weights"].append(row["top_weight"])
-        all_chart_data[name]["top_estimated"].append(row["top_estimated_1rm"])
-        all_chart_data[name]["total_volumes"].append(row["total_volume"])
-        all_chart_data[name]["max_reps"].append(row["max_reps"])
-
-    # Re-order to match the most-recent-first exercise ordering
-    all_chart_data = {name: all_chart_data[name] for name in exercise_names if name in all_chart_data}
-
-    if not all_chart_data:
+    as_of = as_of or date.today()
+    analyses = analyze_all(connection, config, as_of, start_date, end_date)
+    if not analyses:
         raise ValueError("No exercise data found for the selected date range")
-
-    # Build per-exercise payloads (raw series, PR progression, summary).
-    payloads = {
-        name: _build_exercise_payload(
-            data["dates"],
-            data["top_weights"],
-            data["top_estimated"],
-            data["total_volumes"],
-            data["max_reps"],
-        )
-        for name, data in all_chart_data.items()
-    }
-
-    _render_page(payloads, output_path)
-    return len(payloads)
+    _write_page(_build_page_data(connection, analyses, as_of), output_path)
+    return len(analyses)

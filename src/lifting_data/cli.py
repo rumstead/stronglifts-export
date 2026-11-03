@@ -4,11 +4,26 @@ import argparse
 import logging
 import os
 import sqlite3
+from datetime import date
 
 from .charts import generate_all_exercises_page, generate_exercise_progress_chart
 from .db import connect, init_db
 from .email_ingest import EmailIngestConfig, ingest_from_gmail
 from .ingest import ingest_csv
+from .progression import analyze_all, load_config, plan_workouts
+
+
+def _add_progression_args(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument(
+        "--config",
+        default=None,
+        help="Optional progression TOML (rep ranges, increments, weight ladders)",
+    )
+    subparser.add_argument(
+        "--as-of",
+        default=None,
+        help="Evaluate as of this date (YYYY-MM-DD, default: today)",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -36,11 +51,29 @@ def _build_parser() -> argparse.ArgumentParser:
     plot_parser.add_argument("--output", required=True, help="Output HTML file path")
     plot_parser.add_argument("--start", help="Start date filter (YYYY-MM-DD)")
     plot_parser.add_argument("--end", help="End date filter (YYYY-MM-DD)")
+    _add_progression_args(plot_parser)
 
-    plot_all_parser = subparsers.add_parser("plot-all", help="Generate single page with all exercises in a dropdown")
+    plot_all_parser = subparsers.add_parser(
+        "plot-all", help="Generate the dashboard: next workout, progress board, exercise detail, volume"
+    )
     plot_all_parser.add_argument("--output", default="output/index.html", help="Output HTML file path")
     plot_all_parser.add_argument("--start", help="Start date filter (YYYY-MM-DD)")
     plot_all_parser.add_argument("--end", help="End date filter (YYYY-MM-DD)")
+    _add_progression_args(plot_all_parser)
+
+    next_parser = subparsers.add_parser(
+        "next-workout", help="Print recommended weight, sets, and reps for the next session"
+    )
+    next_parser.add_argument(
+        "--workout", default=None, help="Workout name (default: the one predicted next in your rotation)"
+    )
+    _add_progression_args(next_parser)
+
+    ranges_parser = subparsers.add_parser(
+        "rep-ranges", help="Print each active exercise's rep range, weight steps, and status"
+    )
+    ranges_parser.add_argument("--all", action="store_true", help="Include archived exercises")
+    _add_progression_args(ranges_parser)
 
     email_parser = subparsers.add_parser(
         "ingest-email", help="Ingest Strong or Hevy CSV attachments from Gmail"
@@ -89,6 +122,42 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _as_of(args: argparse.Namespace) -> date:
+    """Evaluation date: --as-of, else --end (when given), else today."""
+    if args.as_of:
+        return date.fromisoformat(args.as_of)
+    end = getattr(args, "end", None)
+    return date.fromisoformat(end[:10]) if end else date.today()
+
+
+def _print_next_workout(connection: sqlite3.Connection, args: argparse.Namespace) -> int:
+    as_of = _as_of(args)
+    analyses = analyze_all(connection, load_config(args.config), as_of)
+    plans, predicted = plan_workouts(connection, analyses, as_of)
+    if not plans:
+        print("No workouts in the last 60 days.")
+        return 1
+    wanted = args.workout or predicted or plans[0].name
+    plan = next((p for p in plans if p.name.lower() == wanted.lower()), None)
+    if plan is None:
+        names = ", ".join(p.name for p in plans)
+        print(f"Unknown workout '{wanted}'. Recent workouts: {names}")
+        return 1
+    label = " (up next)" if plan.name == predicted else ""
+    print(f"{plan.name}{label} — based on your session on {plan.last_date}")
+    for name in plan.exercises:
+        analysis = analyses[name]
+        rx = analysis.prescription
+        if rx is None:
+            continue
+        print(f"\n  {name}  [{analysis.status}]")
+        print(f"    Next: {rx.describe()}")
+        print(f"    Why:  {rx.reason}")
+        print(f"    Effort: {rx.effort}")
+        print(f"    Next step: {rx.goal}")
+    return 0
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -134,6 +203,8 @@ def main() -> int:
             output_path=args.output,
             start_date=args.start,
             end_date=args.end,
+            config=load_config(args.config),
+            as_of=_as_of(args),
         )
         print(f"Chart generated with {points} points at {args.output}")
         return 0
@@ -144,8 +215,27 @@ def main() -> int:
             output_path=args.output,
             start_date=args.start,
             end_date=args.end,
+            config=load_config(args.config),
+            as_of=_as_of(args),
         )
         print(f"Generated page with {count} exercises at {args.output}")
+        return 0
+
+    if args.command == "next-workout":
+        return _print_next_workout(connection, args)
+
+    if args.command == "rep-ranges":
+        as_of = _as_of(args)
+        analyses = analyze_all(connection, load_config(args.config), as_of)
+        for name, analysis in analyses.items():
+            if analysis.status == "Archived" and not args.all:
+                continue
+            low, high = analysis.rep_range.low, analysis.rep_range.high
+            steps = "observed weights" if analysis.ladder else f"+{analysis.increment:g} lb"
+            print(
+                f"{name}: {low}-{high} reps ({analysis.rep_range.source}), steps {steps}, "
+                f"status {analysis.status}"
+            )
         return 0
 
     if args.command == "ingest-email":

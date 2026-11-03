@@ -1,0 +1,23 @@
+# Optional overrides for the progression coach.
+# Use with: --config progression.toml (plot, plot-all, next-workout, rep-ranges)
+#
+# Without a config, rep ranges are inferred from your history (the reps you hit
+# before each weight increase, and where you landed after it), fixed-step
+# equipment moves in 5 lb jumps, and odd-step equipment (cable stacks such as
+# lat pulldown and cable rows) moves to the next weight you have actually used.
+
+[defaults]
+increment = 5        # lb added when every working set reaches the top of the range
+layoff_days = 14     # days off before the next session is eased back ~10%
+deload_pct = 0.10    # load reduction for a stall or a layoff
+bodyweight = 180     # used only to score assisted/bodyweight movements
+
+# Per-exercise overrides (names must match your Hevy exercise titles exactly).
+# [exercises."Bench Press (Barbell)"]
+# rep_range = [6, 8]
+#
+# [exercises."Lat Pulldown (Cable)"]
+# ladder = [143, 148, 153, 158, 165, 170]   # the stack's real steps
+#
+# [exercises."Lateral Raise (Dumbbell)"]
+# increment = 2.5
