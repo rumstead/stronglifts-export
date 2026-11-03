@@ -161,6 +161,7 @@ class Prescription:
     weight: float
     target_reps: tuple[int, ...]
     reason: str
+    short: str = ""  # one-line cue for compact views
 
     @property
     def sets(self) -> int:
@@ -446,6 +447,7 @@ def prescribe(
             eased,
             tuple([mid] * n_sets),
             f"{days_off} days since last session ({last_desc}). Ease back in at {unit_change(eased)}, then resume.",
+            short=f"{days_off} days off — ease back in",
         )
 
     if kind == "bodyweight":
@@ -455,9 +457,11 @@ def prescribe(
                 weight,
                 tuple([high] * n_sets),
                 f"Hit {high}+ on every set ({last_desc}). Add load or a harder variation.",
+                short=f"Hit {high} on every set — add load",
             )
         targets = _add_rep(reps, high)
-        return Prescription("hold", weight, tuple(targets), f"Last {last_desc}. Add a rep to your weakest set.")
+        return Prescription("hold", weight, tuple(targets), f"Last {last_desc}. Add a rep to your weakest set.",
+                            short="+1 rep on your weakest set")
 
     if min(reps) >= high:
         new_weight = _step(weight, harder=True, kind=kind, ladder=ladder, increment=increment)
@@ -471,6 +475,7 @@ def prescribe(
             new_weight,
             tuple([low] * n_sets),
             f"{why}. {verb.capitalize()}: {unit_change(new_weight)}; build back from {low} reps.",
+            short=f"Hit {high} on every set{' easily' if easy else ''} — {verb}",
         )
 
     run = _trailing_run(sessions)
@@ -485,6 +490,7 @@ def prescribe(
             tuple([high] * n_sets),
             f"No rep gains in 3 sessions at {unit_change(weight)}{effort}. "
             f"Deload ~{int(config.deload_pct * 100)}% to {unit_change(eased)} and push reps to {high}.",
+            short=f"Stuck at {unit_change(weight)} for 3 sessions — deload",
         )
 
     if min(reps) < low:
@@ -498,21 +504,25 @@ def prescribe(
                 back,
                 tuple([low] * n_sets),
                 f"Below {low} reps two sessions running at {unit_change(weight)}. Drop back to {unit_change(back)} and rebuild.",
+                short=f"Under {low} reps twice — drop back",
             )
         return Prescription(
             "hold",
             weight,
             tuple(_add_rep(reps, high)),
             f"Last {last_desc}, below the {low}–{high} range. Stay at {unit_change(weight)} until every set reaches {low}.",
+            short=f"Build every set to {low}",
         )
 
     if rpe is not None and rpe <= 8.0:
         targets = [min(r + 1, high) for r in reps]
         why = f"Last {last_desc}, with reps in reserve. Add a rep to every set."
+        short = "Reps in reserve last time — +1 rep each set"
     else:
         targets = _add_rep(reps, high)
         why = f"Last {last_desc}. Add a rep to your weakest set; move up once all sets hit {high}."
-    return Prescription("add-reps", weight, tuple(targets), why)
+        short = f"+1 rep on your weakest set · move up at {high}"
+    return Prescription("add-reps", weight, tuple(targets), why, short=short)
 
 
 def _avg(values: list[int]) -> float:

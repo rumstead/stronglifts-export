@@ -92,6 +92,7 @@ def _exercise_payload(analysis: ExerciseAnalysis) -> dict[str, object]:
                 "targets": list(p.target_reps),
                 "text": p.describe(),
                 "reason": p.reason,
+                "short": p.short or p.reason,
             }
             if p
             else None
@@ -150,6 +151,8 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     .rx { font-size: 22px; font-weight: 700; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
     .rx .action { font-size: 12px; font-weight: 600; color: var(--accent); margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
     .reason { font-size: 13px; color: var(--text); margin: 2px 0 6px; }
+    .rx .up { color: var(--accent); }
+    .cue { font-size: 14px; color: var(--text); margin: 0 0 4px; }
     .meta { font-size: 12px; color: var(--muted); }
     .board-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px 58px 58px; gap: 8px; align-items: center;
       padding: 9px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
@@ -316,6 +319,40 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       return wrap;
     }
 
+    // Statuses worth flagging on the Next tab; the rest stay quiet.
+    const ATTENTION = ['Stalled', 'Regressing', 'Returning'];
+
+    function compactSets(session) {
+      // "220 × 9,8 · 250 × 8": working and top sets grouped by weight, warm-ups and drop sets left out.
+      const groups = [];
+      session.sets.filter(s => s[3] !== 'warmup' && s[3] !== 'dropset').forEach(s => {
+        const g = groups[groups.length - 1];
+        if (g && g.w === s[0]) g.reps.push(s[1]); else groups.push({ w: s[0], reps: [s[1]] });
+      });
+      return groups.map(g => fmt(g.w) + ' × ' + g.reps.join(',')).join(' · ');
+    }
+
+    function compactBlock(data) {
+      const wrap = el('div');
+      const p = data.prescription;
+      if (!p) { wrap.appendChild(el('div', 'meta', 'Not trained recently.')); return wrap; }
+      const last = data.sessions[data.sessions.length - 1];
+      const rx = el('div', 'rx');
+      // Highlight what changed since last time: the weight, or the reps you're adding.
+      const lastReps = last.sets.filter(s => s[4]).map(s => s[1]);
+      const sameWeight = p.weight === last.weight;
+      rx.appendChild(el('span', sameWeight ? '' : 'up', fmt(p.weight) + ' lb'));
+      rx.appendChild(document.createTextNode(' × '));
+      p.targets.forEach((r, i) => {
+        if (i) rx.appendChild(document.createTextNode(','));
+        rx.appendChild(el('span', sameWeight && r > (lastReps[i] || 0) ? 'up' : '', String(r)));
+      });
+      wrap.appendChild(rx);
+      wrap.appendChild(el('div', 'cue', p.short));
+      wrap.appendChild(el('div', 'meta', 'Last ' + compactSets(last)));
+      return wrap;
+    }
+
     function renderNext() {
       const pills = document.getElementById('workout-pills');
       const list = document.getElementById('next-list');
@@ -334,7 +371,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
         });
         list.innerHTML = '';
         const plan = DATA.workouts.find(w => w.name === current);
-        list.appendChild(el('div', 'meta', 'Based on your last ' + plan.name + ' session (' + fmtDate(plan.last_date) + ')'));
+        list.appendChild(el('div', 'meta', 'Last done ' + fmtDate(plan.last_date)));
         list.lastChild.style.margin = '0 2px 8px';
         plan.exercises.forEach(name => {
           const data = chartData[name];
@@ -344,9 +381,9 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
           const title = el('span', 'ex-name', name);
           title.addEventListener('click', () => openExercise(name));
           head.appendChild(title);
-          head.appendChild(chip(data.status));
+          if (ATTENTION.includes(data.status)) head.appendChild(chip(data.status));
           card.appendChild(head);
-          card.appendChild(prescriptionBlock(name, data));
+          card.appendChild(compactBlock(data));
           list.appendChild(card);
         });
       }
