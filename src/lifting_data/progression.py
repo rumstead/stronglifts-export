@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 import tomllib
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from pathlib import Path
 from statistics import median
@@ -162,6 +162,8 @@ class Prescription:
     target_reps: tuple[int, ...]
     reason: str
     short: str = ""  # one-line cue for compact views
+    effort: str = ""  # target effort, e.g. "RPE 9–9.5 · about 1 rep left on the last set"
+    goal: str = ""  # what earns the next weight change
 
     @property
     def sets(self) -> int:
@@ -525,6 +527,48 @@ def prescribe(
     return Prescription("add-reps", weight, tuple(targets), why, short=short)
 
 
+# Target effort per action. Hard-but-not-failure on progression sessions (your
+# usual RPE 9–9.5), more in reserve when easing back or deloading.
+EFFORT_BY_ACTION: dict[str, str] = {
+    "return": "RPE 7–8 · 2–3 reps in reserve",
+    "deload": "RPE 7–8 · 2–3 reps in reserve",
+    "increase": "RPE 8.5–9 · 1–2 reps in reserve",
+    "drop-back": "RPE 8.5–9 · 1–2 reps in reserve",
+    "add-reps": "RPE 9–9.5 · ~1 rep left on the last set",
+    "hold": "RPE 9–9.5 · ~1 rep left on the last set",
+    "add-load": "RPE 9 · ~1 rep left",
+}
+
+
+def with_targets(
+    rx: Prescription,
+    last: Session,
+    kind: str,
+    rep_range: RepRange,
+    ladder: tuple[float, ...] | None,
+    increment: float,
+) -> Prescription:
+    """Attach the target effort and the condition for the next weight change."""
+    low, high = rep_range.low, rep_range.high
+    n = rx.sets
+    w = _fmt_weight
+    next_up = _step(rx.weight, harder=True, kind=kind, ladder=ladder, increment=increment)
+    move = "less assistance" if kind == "assisted" else "move up"
+    if rx.action in ("return", "deload"):
+        goal = f"Then back to {w(last.working_weight)} lb once every set hits {high}"
+        if rx.action == "return":
+            goal = f"If it feels easy, back to {w(last.working_weight)} lb next time"
+    elif rx.action == "drop-back":
+        goal = f"Rebuild to {high}×{n}, then retry {w(last.working_weight)} lb"
+    elif rx.action == "add-load":
+        goal = "Add weight or a harder variation once this is easy"
+    elif rx.action == "increase":
+        goal = f"{low}+ every set is a win · {move} at {high}×{n}"
+    else:
+        goal = f"Hit {high} on all {n} sets → {w(next_up)} lb"
+    return replace(rx, effort=EFFORT_BY_ACTION.get(rx.action, ""), goal=goal)
+
+
 def _avg(values: list[int]) -> float:
     return sum(values) / len(values) if values else 0.0
 
@@ -608,6 +652,7 @@ def analyze_exercise(
     prescription = None
     if status != "Archived":
         prescription = prescribe(sessions, kind, rep_range, ladder, increment, config, as_of)
+        prescription = with_targets(prescription, sessions[-1], kind, rep_range, ladder, increment)
     return ExerciseAnalysis(
         name=name,
         kind=kind,

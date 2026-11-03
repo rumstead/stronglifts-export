@@ -93,6 +93,8 @@ def _exercise_payload(analysis: ExerciseAnalysis) -> dict[str, object]:
                 "text": p.describe(),
                 "reason": p.reason,
                 "short": p.short or p.reason,
+                "effort": p.effort,
+                "goal": p.goal,
             }
             if p
             else None
@@ -152,7 +154,17 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     .rx .action { font-size: 12px; font-weight: 600; color: var(--accent); margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
     .reason { font-size: 13px; color: var(--text); margin: 2px 0 6px; }
     .rx .up { color: var(--accent); }
-    .cue { font-size: 14px; color: var(--text); margin: 0 0 4px; }
+    .cue { font-size: 14px; color: var(--text); margin: 0 0 8px; }
+    .sets-grid { display: grid; gap: 2px 6px; align-items: baseline; background: var(--neutral-bg);
+      border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+    .sets-grid .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+    .sets-grid .tgt { font-size: 17px; font-weight: 700; }
+    .sets-grid .delta { font-size: 11px; font-weight: 600; color: var(--accent); }
+    .sets-grid .prev { font-size: 12px; color: var(--muted); }
+    .facts { font-size: 13px; display: grid; grid-template-columns: 64px 1fr; gap: 3px 8px; }
+    .facts > div { display: contents; }
+    .facts .k { color: var(--muted); font-size: 12px; padding-top: 1px; }
+    .rx .sets-count { font-size: 15px; font-weight: 600; color: var(--muted); }
     .meta { font-size: 12px; color: var(--muted); }
     .board-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px 58px 58px; gap: 8px; align-items: center;
       padding: 9px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
@@ -312,6 +324,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       rx.appendChild(el('span', 'action', labels[p.action] || p.action));
       wrap.appendChild(rx);
       wrap.appendChild(el('div', 'reason', p.reason));
+      if (p.effort) wrap.appendChild(el('div', 'meta', 'Effort: ' + p.effort + ' · Next step: ' + p.goal));
       const last = data.sessions[data.sessions.length - 1];
       wrap.appendChild(el('div', 'meta',
         'Last: ' + setsText(last, false) + ' · ' + fmtDate(last.date) +
@@ -322,35 +335,53 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     // Statuses worth flagging on the Next tab; the rest stay quiet.
     const ATTENTION = ['Stalled', 'Regressing', 'Returning'];
 
-    function compactSets(session) {
-      // "220 × 9,8 · 250 × 8": working and top sets grouped by weight, warm-ups and drop sets left out.
-      const groups = [];
-      session.sets.filter(s => s[3] !== 'warmup' && s[3] !== 'dropset').forEach(s => {
-        const g = groups[groups.length - 1];
-        if (g && g.w === s[0]) g.reps.push(s[1]); else groups.push({ w: s[0], reps: [s[1]] });
-      });
-      return groups.map(g => fmt(g.w) + ' × ' + g.reps.join(',')).join(' · ');
-    }
-
     function compactBlock(data) {
       const wrap = el('div');
       const p = data.prescription;
       if (!p) { wrap.appendChild(el('div', 'meta', 'Not trained recently.')); return wrap; }
       const last = data.sessions[data.sessions.length - 1];
       const rx = el('div', 'rx');
-      // Highlight what changed since last time: the weight, or the reps you're adding.
-      const lastReps = last.sets.filter(s => s[4]).map(s => s[1]);
       const sameWeight = p.weight === last.weight;
       rx.appendChild(el('span', sameWeight ? '' : 'up', fmt(p.weight) + ' lb'));
-      rx.appendChild(document.createTextNode(' × '));
-      p.targets.forEach((r, i) => {
-        if (i) rx.appendChild(document.createTextNode(','));
-        rx.appendChild(el('span', sameWeight && r > (lastReps[i] || 0) ? 'up' : '', String(r)));
-      });
+      rx.appendChild(el('span', 'sets-count', ' · ' + p.targets.length + ' sets'));
       wrap.appendChild(rx);
       wrap.appendChild(el('div', 'cue', p.short));
-      wrap.appendChild(el('div', 'meta', 'Last ' + compactSets(last)));
+      wrap.appendChild(setGrid(p, last));
+      const facts = el('div', 'facts');
+      [['Effort', p.effort], ['Next step', p.goal]].forEach(([k, v]) => {
+        if (!v) return;
+        const row = el('div');
+        row.appendChild(el('span', 'k', k));
+        row.appendChild(el('span', null, v));
+        facts.appendChild(row);
+      });
+      wrap.appendChild(facts);
       return wrap;
+    }
+
+    // Per-set targets with last session's reps underneath, so each set has a number to beat.
+    function setGrid(p, last) {
+      // Last session's sets in order (warm-ups and drop sets left out), including any off-weight top set.
+      const prevSets = last.sets.filter(s => s[3] !== 'warmup' && s[3] !== 'dropset');
+      const grid = el('div', 'sets-grid');
+      grid.style.gridTemplateColumns = '48px repeat(' + p.targets.length + ', 1fr)';
+      grid.appendChild(el('div', 'k', ''));
+      p.targets.forEach((_, i) => grid.appendChild(el('div', 'k', 'Set ' + (i + 1))));
+      grid.appendChild(el('div', 'k', 'Target'));
+      p.targets.forEach((r, i) => {
+        const prev = prevSets[i];
+        const cell = el('div', 'tgt', String(r));
+        if (prev && prev[0] === p.weight && r > prev[1]) cell.appendChild(el('span', 'delta', ' +' + (r - prev[1])));
+        grid.appendChild(cell);
+      });
+      grid.appendChild(el('div', 'k', 'Last'));
+      p.targets.forEach((_, i) => {
+        const prev = prevSets[i];
+        const text = !prev ? '–' : (prev[0] === p.weight ? String(prev[1]) : fmt(prev[0]) + '×' + prev[1]) +
+          (prev[2] !== null ? ' @' + prev[2] : '');
+        grid.appendChild(el('div', 'prev', text));
+      });
+      return grid;
     }
 
     function renderNext() {

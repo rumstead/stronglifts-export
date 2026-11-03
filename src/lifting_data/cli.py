@@ -149,6 +149,8 @@ def _print_next_workout(connection: sqlite3.Connection, args: argparse.Namespace
         print(f"\n  {name}  [{analysis.status}]")
         print(f"    Next: {rx.describe()}")
         print(f"    Why:  {rx.reason}")
+        print(f"    Effort: {rx.effort}")
+        print(f"    Next step: {rx.goal}")
     return 0
 
 
