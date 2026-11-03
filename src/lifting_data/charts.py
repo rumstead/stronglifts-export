@@ -342,7 +342,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       const last = data.sessions[data.sessions.length - 1];
       const rx = el('div', 'rx');
       const sameWeight = p.weight === last.weight;
-      rx.appendChild(el('span', sameWeight ? '' : 'up', fmt(p.weight) + ' lb'));
+      rx.appendChild(el('span', sameWeight ? '' : 'up', p.weight === 0 ? 'Bodyweight' : fmt(p.weight) + ' lb'));
       rx.appendChild(el('span', 'sets-count', ' · ' + p.targets.length + ' sets'));
       wrap.appendChild(rx);
       wrap.appendChild(el('div', 'cue', p.short));

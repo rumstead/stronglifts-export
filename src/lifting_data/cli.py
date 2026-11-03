@@ -123,7 +123,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _as_of(args: argparse.Namespace) -> date:
-    return date.fromisoformat(args.as_of) if args.as_of else date.today()
+    """Evaluation date: --as-of, else --end (when given), else today."""
+    if args.as_of:
+        return date.fromisoformat(args.as_of)
+    end = getattr(args, "end", None)
+    return date.fromisoformat(end[:10]) if end else date.today()
 
 
 def _print_next_workout(connection: sqlite3.Connection, args: argparse.Namespace) -> int:

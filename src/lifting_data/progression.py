@@ -7,6 +7,7 @@ records), and RP Hypertrophy (RPE/RIR-aware effort and weekly set volume).
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import tomllib
 from collections import Counter, defaultdict
@@ -21,7 +22,7 @@ NON_WORKING_SET_TYPES = frozenset({"warmup", "dropset"})
 # Sets within this fraction of the session's working weight count as working sets.
 WORKING_WEIGHT_TOLERANCE = 0.025
 # Sessions within this fraction of each other count as "the same weight" for stall checks.
-SAME_WEIGHT_TOLERANCE = 0.02
+SAME_WEIGHT_TOLERANCE = 0.005
 
 # Rep ranges are snapped to familiar program brackets.
 LOW_BRACKETS = (3, 5, 6, 8, 10, 12, 15)
@@ -35,6 +36,11 @@ MAX_UP_EVENT_GAP_DAYS = 21
 # Rep cost of a weight increase when there is no history of increases at all.
 DEFAULT_REPS_LOST_PER_10PCT = 1.0
 TARGET_RPE = 9.0
+
+# A lone heavier set with at least this many reps is real work, not a test single.
+MIN_TOP_SET_REPS = 5
+
+logger = logging.getLogger(__name__)
 
 STATUS_ORDER = ("Regressing", "Stalled", "Returning", "Holding", "Progressing", "Archived")
 
@@ -123,13 +129,15 @@ def epley(weight: float, reps: int) -> float:
     return weight * (1 + reps / 30.0)
 
 
-def classify_working_sets(session: Session) -> None:
+def classify_working_sets(session: Session, previous_weight: float | None = None) -> None:
     """Pick the session's working weight and the sets performed at it.
 
     Working weight is the hardest weight (heaviest, or least assistance) that
     has at least two sets within tolerance, so a heavy single or a lighter
     ramp-up set does not define the session. Without such a weight, the
-    hardest weight done for 3+ reps is used.
+    hardest weight done for 3+ reps is used. If a single harder set (5+ reps)
+    matches the previous session's working weight, that weight still counts:
+    the lifter held it, even with lighter sets around it.
     """
     candidates = [s for s in session.sets if s.set_type not in NON_WORKING_SET_TYPES and s.reps > 0]
     if session.assisted and any(s.weight > 0 for s in candidates):
@@ -148,6 +156,13 @@ def classify_working_sets(session: Session) -> None:
     weight = next((w for w in hardest_first if len(near(w)) >= 2), None)
     if weight is None:
         weight = next((s.weight for s in sorted(candidates, key=lambda s: s.weight, reverse=not session.assisted) if s.reps >= 3), hardest_first[0])
+    if previous_weight is not None and previous_weight > 0 and _harder(previous_weight, weight, session.assisted):
+        held = [
+            s for s in candidates
+            if _same_weight(s.weight, previous_weight) and s.reps >= MIN_TOP_SET_REPS
+        ]
+        if held:
+            weight = held[0].weight
     session.working_weight = weight
     session.working_sets = near(weight)
 
@@ -175,7 +190,8 @@ class Prescription:
 
     def describe(self) -> str:
         reps = ",".join(str(r) for r in self.target_reps)
-        return f"{_fmt_weight(self.weight)} lb × {reps}"
+        load = "Bodyweight" if self.weight == 0 else f"{_fmt_weight(self.weight)} lb"
+        return f"{load} × {reps}"
 
 
 @dataclass
@@ -247,8 +263,11 @@ def load_sessions(
     result: dict[str, list[Session]] = {}
     for name, sessions in by_exercise.items():
         ordered = [sessions[k] for k in sorted(sessions)]
+        previous: float | None = None
         for session in ordered:
-            classify_working_sets(session)
+            classify_working_sets(session, previous)
+            if session.working_sets:
+                previous = session.working_weight
         ordered = [s for s in ordered if s.working_sets]
         if ordered:
             result[name] = ordered
@@ -384,7 +403,10 @@ def _reduce_by_pct(weight: float, pct: float, kind: str, ladder: tuple[float, ..
     if ladder:
         options = [w for w in ladder if w < weight - 1e-6]
         if options:
-            return min(options, key=lambda w: abs(w - target))
+            nearest = min(options, key=lambda w: abs(w - target))
+            # Use a known stack weight only if it delivers at least half the intended cut.
+            if weight - nearest >= weight * pct / 2:
+                return nearest
     snapped = increment * round(target / increment) if increment > 0 else target
     if 0 < snapped < weight:
         return snapped
@@ -392,12 +414,12 @@ def _reduce_by_pct(weight: float, pct: float, kind: str, ladder: tuple[float, ..
 
 
 def _trailing_run(sessions: list[Session]) -> list[Session]:
-    """Most recent consecutive sessions at the latest working weight."""
+    """Most recent consecutive sessions at the latest working weight, within the current block."""
     if not sessions:
         return []
     weight = sessions[-1].working_weight
     run: list[Session] = []
-    for session in reversed(sessions):
+    for session in reversed(current_block(sessions)):
         if not _same_weight(session.working_weight, weight):
             break
         run.append(session)
@@ -420,10 +442,37 @@ def current_block(sessions: list[Session]) -> list[Session]:
 def _set_count(sessions: list[Session]) -> int:
     counts = Counter(len(s.working_sets) for s in sessions[-3:])
     count = max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
-    return max(2, min(count, 5))
+    return max(1, min(count, 5))
 
 
 def prescribe(
+    sessions: list[Session],
+    kind: str,
+    rep_range: RepRange,
+    ladder: tuple[float, ...] | None,
+    increment: float,
+    config: ProgressionConfig,
+    as_of: date,
+    reps_lost_per_10pct: float = DEFAULT_REPS_LOST_PER_10PCT,
+) -> Prescription:
+    """Recommend the next session, with one target per set.
+
+    Targets are computed from the sets actually done; when the usual set count is
+    higher than last session's, the extra sets repeat last session's final reps.
+    """
+    rx = _prescribe(sessions, kind, rep_range, ladder, increment, config, as_of, reps_lost_per_10pct)
+    n_sets = _set_count(sessions)
+    targets = list(rx.target_reps)[:n_sets]
+    last_reps = sessions[-1].reps
+    fill = min(last_reps[-1], rep_range.high) if last_reps else rep_range.low
+    if rx.action in ("increase", "drop-back", "deload", "return") and targets:
+        fill = targets[-1]
+    while len(targets) < n_sets:
+        targets.append(max(1, fill))
+    return replace(rx, target_reps=tuple(targets))
+
+
+def _prescribe(
     sessions: list[Session],
     kind: str,
     rep_range: RepRange,
@@ -438,8 +487,6 @@ def prescribe(
     weight = last.working_weight
     n_sets = _set_count(sessions)
     reps = list(last.reps)[:n_sets]
-    while len(reps) < n_sets:
-        reps.append(reps[-1] if reps else low)
     unit_change = lambda w: f"{_fmt_weight(w)} lb"  # noqa: E731
     rpe = last.avg_rpe
     rpe_note = f" @ RPE {rpe:.1f}" if rpe is not None else ""
@@ -501,7 +548,7 @@ def prescribe(
             eased,
             tuple([high] * n_sets),
             f"No rep gains in 3 sessions at {unit_change(weight)}{effort}. "
-            f"Deload ~{int(config.deload_pct * 100)}% to {unit_change(eased)} and push reps to {high}.",
+            f"Deload {_cut_pct(weight, eased, kind)} to {unit_change(eased)} and push reps to {high}.",
             short=f"Stuck at {unit_change(weight)} for 3 sessions — deload",
         )
 
@@ -564,6 +611,12 @@ def with_targets(
     w = _fmt_weight
     next_up = _step(rx.weight, harder=True, kind=kind, ladder=ladder, increment=increment)
     move = "less assistance" if kind == "assisted" else "move up"
+    if kind == "bodyweight":
+        if rx.action == "return":
+            goal = "If it feels easy, back to full reps next time"
+        else:
+            goal = f"Hit {high} on all {n} sets → add load or a harder variation"
+        return replace(rx, effort=EFFORT_BY_ACTION.get(rx.action, ""), goal=goal)
     if rx.action in ("return", "deload"):
         goal = f"Then back to {w(last.working_weight)} lb once every set hits {high}"
         if rx.action == "return":
@@ -644,6 +697,12 @@ def _avg(values: list[int]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _cut_pct(weight: float, eased: float, kind: str) -> str:
+    if kind == "assisted" or weight <= 0:
+        return "one step"
+    return f"{(1 - eased / weight) * 100:.0f}%"
+
+
 def _add_rep(reps: list[int], cap: int) -> list[int]:
     targets = list(reps)
     if not targets:
@@ -685,7 +744,8 @@ def classify_status(sessions: list[Session], scores: list[float], as_of: date, l
 
     recent = scores[-3:]
     prior = scores[-6:-3]
-    pct = (sum(recent) / len(recent)) / (sum(prior) / len(prior)) - 1 if prior else 0.0
+    prior_avg = sum(prior) / len(prior) if prior else 0.0
+    pct = (sum(recent) / len(recent)) / prior_avg - 1 if prior_avg > 0 else 0.0
     if max(recent) > max(scores[:-3]):
         return "Progressing", "New best in the last 3 sessions"
     if pct >= 0.02:
@@ -699,6 +759,21 @@ def classify_status(sessions: list[Session], scores: list[float], as_of: date, l
     return "Holding", "Within ±2% of recent sessions"
 
 
+def _reconcile_status(status: str, reason: str, rx: Prescription, last: Session) -> tuple[str, str]:
+    """Keep the status consistent with the advice.
+
+    The trend score is an Epley estimate, so a heavier weight with collapsing
+    reps can read as "progress" while the advice is to drop back or deload.
+    """
+    if status not in ("Progressing", "Holding"):
+        return status, reason
+    if rx.action == "drop-back":
+        return "Regressing", f"Reps falling at {_fmt_weight(last.working_weight)} lb"
+    if rx.action == "deload":
+        return "Stalled", f"No rep gains in 3 sessions at {_fmt_weight(last.working_weight)} lb"
+    return status, reason
+
+
 def analyze_exercise(
     name: str,
     sessions: list[Session],
@@ -706,9 +781,10 @@ def analyze_exercise(
     as_of: date,
     global_reps_lost_per_10pct: float = DEFAULT_REPS_LOST_PER_10PCT,
 ) -> ExerciseAnalysis:
-    if is_assisted(name):
+    recent_unloaded = all(s.working_weight == 0 for s in sessions[-5:])
+    if is_assisted(name) and not recent_unloaded:
         kind = "assisted"
-    elif all(s.working_weight == 0 for s in sessions[-5:]):
+    elif recent_unloaded:
         kind = "bodyweight"
     else:
         kind = "weighted"
@@ -729,6 +805,7 @@ def analyze_exercise(
             reps_lost_per_10pct=own_cost if own_cost is not None else global_reps_lost_per_10pct,
         )
         prescription = with_targets(prescription, sessions[-1], kind, rep_range, ladder, increment)
+        status, status_reason = _reconcile_status(status, status_reason, prescription, sessions[-1])
     return ExerciseAnalysis(
         name=name,
         kind=kind,
@@ -765,8 +842,15 @@ def analyze_all(
 ) -> dict[str, ExerciseAnalysis]:
     """Analyze every exercise, ordered by most recent session first."""
     config = config or ProgressionConfig()
-    as_of = as_of or date.today()
+    if as_of is None:
+        as_of = date.fromisoformat(end_date[:10]) if end_date else date.today()
+    # Nothing after the evaluation date may influence it.
+    cap = as_of.isoformat()
+    end_date = min(end_date[:10], cap) if end_date else cap
     sessions = load_sessions(connection, start_date, end_date)
+    configured = set(config.rep_ranges) | set(config.increments) | set(config.ladders)
+    for name in sorted(configured - set(sessions)):
+        logger.warning("Config names an exercise with no data (check spelling): %s", name)
     global_cost = _global_reps_lost_per_10pct(sessions, config.bodyweight)
     analyses = {
         name: analyze_exercise(name, s, config, as_of, global_cost) for name, s in sessions.items()
@@ -801,11 +885,11 @@ def plan_workouts(
         """
         SELECT workout_date, workout_name, exercise_name, MIN(id) AS first_row
         FROM sets
-        WHERE workout_date >= ? AND (reps > 0 OR weight > 0)
+        WHERE workout_date >= ? AND workout_date <= ? AND (reps > 0 OR weight > 0)
         GROUP BY workout_date, workout_name, exercise_name
         ORDER BY workout_date, first_row
         """,
-        (cutoff,),
+        (cutoff, as_of.isoformat() + " 23:59:59"),
     ).fetchall()
     sessions: dict[tuple[str, str], list[str]] = defaultdict(list)
     for row in rows:
@@ -905,7 +989,7 @@ def muscle_for(exercise_name: str) -> str:
 def weekly_muscle_volume(
     analyses: dict[str, ExerciseAnalysis], as_of: date, weeks: int = 12
 ) -> dict[str, object]:
-    """Hard working sets per muscle per ISO week (Monday start) for the last N weeks."""
+    """Hard sets (not warm-ups or drop sets) per muscle per ISO week (Monday start)."""
     this_monday = as_of - timedelta(days=as_of.weekday())
     week_starts = [this_monday - timedelta(weeks=i) for i in range(weeks - 1, -1, -1)]
     index = {w: i for i, w in enumerate(week_starts)}
@@ -918,7 +1002,10 @@ def weekly_muscle_volume(
         for session in analysis.sessions:
             monday = session.day - timedelta(days=session.day.weekday())
             if monday in index:
-                counts[muscle][index[monday]] += len(session.working_sets)
+                # Every hard set counts, including back-off and pyramid sets.
+                counts[muscle][index[monday]] += sum(
+                    1 for st in session.sets if st.set_type not in NON_WORKING_SET_TYPES and st.reps > 0
+                )
     muscles = [m for m in list(VOLUME_TARGETS) + ["Other"] if m in counts and any(counts[m])]
     return {
         "weeks": [w.isoformat() for w in week_starts],

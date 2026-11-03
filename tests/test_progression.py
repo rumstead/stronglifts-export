@@ -22,6 +22,7 @@ from lifting_data.progression import (
     post_increase_targets,
     reps_lost_per_10pct,
     snap_rep_range,
+    weekly_muscle_volume,
 )
 
 START = date(2026, 9, 1)
@@ -326,3 +327,112 @@ def test_plan_follows_rotation_and_exercise_order(tmp_path: Path) -> None:
     assert count == 3
     assert '"next_workout": "Lower"' in html
     assert "Hard sets per muscle per week" in html
+
+
+# ---- regressions from code review ----
+
+def test_weighted_after_bodyweight_sessions_does_not_crash() -> None:
+    sessions = [_session(d * 3, [(0, 10), (0, 10), (0, 10)]) for d in range(6)]
+    sessions += [_session(18 + d * 3, [(25, 10), (25, 10), (25, 10)]) for d in range(3)]
+    analysis = _analyze("Chest Dip", sessions)
+    assert analysis.kind == "weighted"
+    assert analysis.prescription is not None
+
+
+def test_drop_back_is_never_reported_as_progressing() -> None:
+    sessions = [
+        _session(0, [(75, 8), (75, 8), (75, 8)]),
+        _session(4, [(80, 6), (80, 6), (80, 6)]),
+        _session(8, [(80, 8), (80, 8), (80, 6)]),
+        _session(12, [(85, 6), (85, 5), (85, 4)]),
+        _session(16, [(85, 6), (85, 4), (85, 4)]),
+    ]
+    analysis = _analyze("Incline Bench Press (Dumbbell)", sessions)
+    assert analysis.prescription.action == "drop-back"
+    assert analysis.status == "Regressing"
+
+
+def test_lone_top_set_at_last_sessions_weight_is_kept() -> None:
+    first = _session(0, [(250, 10), (250, 10), (250, 9)])
+    second = Session(
+        started_at="2026-09-08 07:00:00",
+        workout_name="Upper",
+        sets=[SetRecord(220, 9, 8.5, "normal"), SetRecord(220, 8, 9.0, "normal"), SetRecord(250, 8, 9.5, "normal")],
+    )
+    classify_working_sets(second, previous_weight=first.working_weight)
+    assert second.working_weight == 250
+    # A lone heavy single is still a test, not the working weight.
+    single = Session("2026-09-08 07:00:00", "Upper", [SetRecord(255, 1, None, "normal"), SetRecord(205, 8, None, "normal"), SetRecord(205, 8, None, "normal")])
+    classify_working_sets(single, previous_weight=255)
+    assert single.working_weight == 205
+
+
+def test_deload_does_not_use_a_stack_step_that_barely_cuts() -> None:
+    sessions = [
+        _session(0, [(148, 10), (148, 10), (148, 10)]),
+        _session(4, [(153, 10), (153, 9), (153, 9)]),  # best at 153
+        _session(8, [(153, 9), (153, 8), (153, 8)]),
+        _session(12, [(153, 9), (153, 8), (153, 7)]),
+        _session(16, [(153, 9), (153, 9), (153, 8)]),
+    ]
+    rx = _analyze("Lat Pulldown (Cable)", sessions).prescription
+    assert rx.action == "deload"
+    assert rx.weight == 140  # 148 would only be a 3% cut
+    assert "8%" in rx.reason
+
+
+def test_assisted_at_zero_assistance_progresses_like_bodyweight() -> None:
+    sessions = [_session(d * 4, [(0, 8), (0, 8), (0, 8)], assisted=True) for d in range(5)]
+    analysis = _analyze("Pull Up (Assisted)", sessions)
+    assert analysis.kind == "bodyweight"
+    assert analysis.prescription.describe().startswith("Bodyweight")
+    assert "lb" not in analysis.prescription.goal
+
+
+def test_single_top_set_gets_a_single_target() -> None:
+    sessions = [_session(d * 4, [(135 + 5 * d, 5)]) for d in range(5)]
+    assert _analyze("Bench Press", sessions).prescription.sets == 1
+
+
+def test_extra_sets_are_padded_after_adding_the_rep() -> None:
+    sessions = [_session(d * 4, [(73, 8), (73, 8), (73, 8)]) for d in range(2)]
+    sessions.append(_session(8, [(73, 7), (73, 7)]))
+    rx = _analyze("Triceps Pushdown", sessions).prescription
+    assert rx.target_reps == (7, 8, 7)
+
+
+def _db_with(tmp_path: Path, rows: list[str]):
+    csv_path = tmp_path / "hevy.csv"
+    csv_path.write_text(HEVY_HEADER + "".join(rows), encoding="utf-8")
+    connection = connect(str(tmp_path / "lifts.db"))
+    init_db(connection)
+    ingest_csv(connection, str(csv_path))
+    return connection
+
+
+def test_as_of_ignores_later_sessions(tmp_path: Path) -> None:
+    rows = [_hevy_row("Upper", "1 Oct 2026, 07:00", "Bench Press (Barbell)", i, 200, 8) for i in range(3)]
+    rows += [_hevy_row("Upper", "20 Oct 2026, 07:00", "Bench Press (Barbell)", i, 225, 8) for i in range(3)]
+    connection = _db_with(tmp_path, rows)
+    analysis = analyze_all(connection, as_of=date(2026, 10, 5))["Bench Press (Barbell)"]
+    assert analysis.sessions[-1].working_weight == 200
+    plans, _ = plan_workouts(connection, {"Bench Press (Barbell)": analysis}, date(2026, 10, 5))
+    assert plans[0].last_date == "2026-10-01"
+
+
+def test_volume_counts_back_off_sets(tmp_path: Path) -> None:
+    rows = [_hevy_row("Upper", "5 Oct 2026, 07:00", "Bench Press (Barbell)", i, w, r) for i, (w, r) in enumerate([(225, 5), (225, 5), (185, 10)])]
+    rows.append(_hevy_row("Upper", "5 Oct 2026, 07:00", "Bench Press (Barbell)", 3, 95, 10, set_type="warmup"))
+    connection = _db_with(tmp_path, rows)
+    as_of = date(2026, 10, 7)
+    volume = weekly_muscle_volume(analyze_all(connection, as_of=as_of), as_of)
+    assert volume["sets"]["Chest"][-1] == 3
+
+
+def test_unknown_config_exercise_is_warned(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    rows = [_hevy_row("Upper", "5 Oct 2026, 07:00", "Bench Press (Barbell)", i, 200, 8) for i in range(3)]
+    connection = _db_with(tmp_path, rows)
+    config = ProgressionConfig(rep_ranges={"Bench Pres (Barbell)": (6, 8)})
+    with caplog.at_level("WARNING"):
+        analyze_all(connection, config=config, as_of=date(2026, 10, 7))
+    assert "Bench Pres (Barbell)" in caplog.text
