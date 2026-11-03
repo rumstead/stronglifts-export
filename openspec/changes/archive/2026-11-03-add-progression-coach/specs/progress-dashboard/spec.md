@@ -5,7 +5,12 @@ The dashboard SHALL open on a Next Workout view grouped by workout name, showing
 
 #### Scenario: Prescription visible per exercise
 - **WHEN** the user opens the dashboard
-- **THEN** each active exercise shows last session sets, the prescribed weight × sets × reps, and the reason
+- **THEN** each active exercise shows the prescribed weight and set count, a one-line cue, per-set targets alongside last session's reps and RPE, the target effort, and the next step
+- **AND** a status badge appears only for Stalled, Regressing, or Returning exercises
+
+#### Scenario: Upcoming workout predicted
+- **WHEN** the dashboard is generated
+- **THEN** the workout that usually follows the most recent one is selected and marked "up next"
 
 ### Requirement: Progress Board
 The dashboard SHALL summarize all active exercises on one screen.
@@ -25,10 +30,10 @@ The dashboard SHALL show focused progress charts for a selected exercise.
 
 #### Scenario: Records by rep count
 - **WHEN** an exercise detail is opened
-- **THEN** it lists the best weight lifted at 5, 8, 10, and 12 reps with dates
+- **THEN** it lists the best weight lifted for at least 1, 3, 5, 8, 10, 12, and 15 reps with dates, using least assistance for assisted exercises
 
 ### Requirement: Weekly Muscle Group Volume
-The dashboard SHALL chart hard working sets per week per muscle group.
+The dashboard SHALL chart hard sets (excluding warm-ups and drop sets) per week per muscle group against approximate target ranges.
 
 #### Scenario: Unmapped exercise
 - **WHEN** an exercise does not match any muscle mapping keyword

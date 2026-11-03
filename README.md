@@ -176,7 +176,7 @@ ssh <your-build-host-ip> 'cd /path/to/lifting-data && make image-build TAG=2026-
 
 ## GitHub Actions image publish on tag
 
-This repo includes a workflow that runs on pushed tags matching `v*` and publishes to GHCR.
+This repo includes a workflow that runs on every pushed tag and publishes to GHCR. Tags are plain semantic versions without a `v` prefix (for example `0.3.0`).
 
 Workflow file:
 
@@ -190,13 +190,13 @@ Required GitHub repository settings:
 Release flow:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag 0.3.0
+git push origin 0.3.0
 ```
 
 Published image tags:
 
-- `ghcr.io/<your-github-user>/lifting-data:v0.1.0`
+- `ghcr.io/<your-github-user>/lifting-data:0.3.0`
 - `ghcr.io/<your-github-user>/lifting-data:latest`
 
 ## Automation options
