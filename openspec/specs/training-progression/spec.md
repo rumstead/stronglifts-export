@@ -45,6 +45,11 @@ The system SHALL recommend weight, set count, and target reps for the next sessi
 #### Scenario: Below range twice without improvement
 - **WHEN** the weakest working set was below the rep range in two consecutive sessions at the same weight and reps did not improve
 - **THEN** the prescription drops back one weight step
+- **AND** targets the reps last achieved at that weight, within the rep range
+
+#### Scenario: Misses at a new weight do not move the goalposts
+- **WHEN** the lifter has just moved up and is below the rep range at the new weight
+- **THEN** sessions at the new weight are not used to infer the rep range
 
 #### Scenario: Effort and next step
 - **WHEN** a prescription is produced
