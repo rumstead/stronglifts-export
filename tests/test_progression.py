@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from lifting_data.charts import generate_all_exercises_page
 from lifting_data.db import connect, init_db
 from lifting_data.ingest import ingest_csv
 from lifting_data.progression import (
+    Prescription,
+    _reconcile_status,
     ProgressionConfig,
     Session,
     SetRecord,
@@ -326,7 +329,8 @@ def test_plan_follows_rotation_and_exercise_order(tmp_path: Path) -> None:
     html = output.read_text(encoding="utf-8")
     assert count == 3
     assert '"next_workout": "Lower"' in html
-    assert "Hard sets per muscle per week" in html
+    assert "Weekly sets per muscle" in html
+    assert not re.search(r"\bRP\b", html)  # describe the numbers, not a brand
 
 
 # ---- regressions from code review ----
@@ -436,3 +440,47 @@ def test_unknown_config_exercise_is_warned(tmp_path: Path, caplog: pytest.LogCap
     with caplog.at_level("WARNING"):
         analyze_all(connection, config=config, as_of=date(2026, 10, 7))
     assert "Bench Pres (Barbell)" in caplog.text
+
+
+# ---- missing reps after moving up ----
+
+def _moved_up_history() -> list[Session]:
+    # Several completed jumps establish an 8-10 range: hit 10, move up, land at 8.
+    return [
+        _session(0, [(80, 10), (80, 10), (80, 10)]),
+        _session(3, [(85, 8), (85, 8), (85, 8)]),
+        _session(6, [(85, 10), (85, 10), (85, 10)]),
+        _session(9, [(90, 8), (90, 8), (90, 8)]),
+        _session(12, [(90, 10), (90, 10), (90, 10)]),
+        _session(15, [(95, 8), (95, 8), (95, 8)]),
+        _session(18, [(95, 10), (95, 10), (95, 10)]),
+    ]
+
+
+def test_misses_after_moving_up_do_not_widen_the_range() -> None:
+    sessions = _moved_up_history() + [_session(21, [(100, 7), (100, 6), (100, 5)])]
+    analysis = _analyze("Romanian Deadlift (Barbell)", sessions)
+    assert (analysis.rep_range.low, analysis.rep_range.high) == (8, 10)
+    assert analysis.prescription.action == "hold"
+    assert analysis.prescription.weight == 100
+
+    sessions.append(_session(24, [(100, 7), (100, 6), (100, 5)]))
+    rx = _analyze("Romanian Deadlift (Barbell)", sessions).prescription
+    assert rx.action == "drop-back"
+    assert rx.weight == 95
+    assert rx.target_reps == (10, 10, 10)  # what you last did at 95, not the range floor
+
+
+def test_building_reps_after_moving_up_is_not_a_stall() -> None:
+    sessions = _moved_up_history() + [
+        _session(21, [(100, 8), (100, 8), (100, 7)]),
+        _session(24, [(100, 8), (100, 8), (100, 8)]),
+    ]
+    analysis = _analyze("Romanian Deadlift (Barbell)", sessions)
+    assert analysis.status == "Progressing"
+    # The e1RM trend can call a fresh jump "Stalled"; double progression says otherwise.
+    rx = analysis.prescription
+    assert _reconcile_status("Stalled", "x", rx, sessions) == ("Progressing", "Reps up at 100 lb")
+    flat = _moved_up_history() + [_session(21, [(100, 7), (100, 6), (100, 5)]), _session(24, [(100, 7), (100, 6), (100, 5)])]
+    hold = Prescription("hold", 100, (7, 6, 6), "r")
+    assert _reconcile_status("Stalled", "x", hold, flat) == ("Holding", "Moved up to 100 lb — building reps")

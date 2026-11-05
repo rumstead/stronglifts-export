@@ -189,14 +189,14 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     .set { display: inline-block; margin: 0 6px 2px 0; }
     .set.extra { color: var(--muted); }
     .rpe { color: var(--muted); font-size: 11px; }
-    .vol-row { display: grid; grid-template-columns: 92px 1fr 70px; gap: 10px; align-items: center; padding: 8px 0;
+    .vol-row { display: grid; grid-template-columns: 92px 1fr 86px; gap: 10px; align-items: center; padding: 8px 0;
       border-bottom: 1px solid var(--line); }
     .vol-row:last-child { border-bottom: 0; }
     .vol-name { font-size: 13px; font-weight: 600; }
     .track { position: relative; height: 14px; background: var(--neutral-bg); border-radius: 7px; }
     .band { position: absolute; top: 0; bottom: 0; background: var(--good-bg); border-radius: 7px; }
     .marker { position: absolute; top: -3px; width: 4px; height: 20px; background: var(--accent); border-radius: 2px; margin-left: -2px; }
-    .vol-num { font-size: 12px; text-align: right; color: var(--muted); }
+    .vol-num { font-size: 12px; text-align: right; color: var(--muted); white-space: nowrap; }
     .vol-num b { color: var(--text); font-size: 14px; }
     .legend { font-size: 12px; color: var(--muted); margin: 4px 0 8px; }
     .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
@@ -204,7 +204,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
     @media (max-width: 480px) {
       .board-row { grid-template-columns: minmax(0, 1fr) 64px 56px; }
       .board-row .c12 { display: none; }
-      .vol-row { grid-template-columns: 80px 1fr 60px; }
+      .vol-row { grid-template-columns: 76px 1fr 80px; }
     }
   </style>
 </head>
@@ -256,9 +256,10 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 
     <section class="view" id="view-volume">
       <div class="card">
-        <h3>Hard sets per muscle per week</h3>
-        <div class="legend"><span style="background: var(--good-bg)"></span>approx. productive range (RP guideline)
-          &nbsp; <span style="background: var(--accent)"></span>your 4-week average</div>
+        <h3>Weekly sets per muscle</h3>
+        <div class="meta">Working sets per week (warm-ups and drop sets don't count), averaged over your last 4 full weeks.</div>
+        <div class="legend"><span style="background: var(--good-bg)"></span>recommended sets per week
+          &nbsp; <span style="background: var(--accent)"></span>your average</div>
         <div id="volume-rows"></div>
       </div>
       <div class="card"><h3>Weekly sets, last 12 weeks</h3><div id="chart-volume"></div></div>
@@ -669,6 +670,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
         const num = el('div', 'vol-num');
         num.appendChild(el('b', null, avg.toFixed(1)));
         num.appendChild(document.createTextNode(' /wk'));
+        if (t) num.appendChild(el('div', null, 'goal ' + t[0] + '–' + t[1]));
         num.appendChild(el('div', null, 'this wk ' + v.sets[m][n - 1]));
         row.appendChild(num);
         root.appendChild(row);

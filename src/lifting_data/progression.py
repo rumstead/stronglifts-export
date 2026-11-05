@@ -2,7 +2,8 @@
 
 All rules are deterministic and explainable. Inspired by StrongLifts (fixed
 increments, deload after repeated failure), Hevy (previous sets and rep-max
-records), and RP Hypertrophy (RPE/RIR-aware effort and weekly set volume).
+records), and hypertrophy programming practice (RPE/RIR-aware effort and
+weekly set volume per muscle).
 """
 
 from __future__ import annotations
@@ -310,11 +311,18 @@ def infer_rep_range(sessions: list[Session], assisted: bool) -> RepRange:
     session at the new weight mark the bottom. Without any such
     events, fall back to the 20th/90th percentile of recent working reps, or
     a default 8-12 for exercises with fewer than four sessions.
+
+    Sessions at the weight currently being built are left out (when there is
+    enough history without them): a miss right after a jump must not widen
+    the range it is judged against.
     """
     if not sessions:
         return RepRange(8, 12, "default")
     cutoff = sessions[-1].day - timedelta(days=REP_RANGE_LOOKBACK_DAYS)
     recent = [s for s in sessions if s.day >= cutoff]
+    in_progress = len(_trailing_run(sessions))
+    if len(recent) - in_progress >= 4:
+        recent = recent[: len(recent) - in_progress]
     tops: list[int] = []
     bottoms: list[int] = []
     for prev, cur in zip(recent, recent[1:]):
@@ -558,10 +566,14 @@ def _prescribe(
         improving = prev is not None and _avg(last.reps) > _avg(prev.reps)
         if prev_same and min(prev.reps) < low and len(run) >= 2 and not improving:
             back = _step(weight, harder=False, kind=kind, ladder=ladder, increment=increment)
+            # Aim for what you last managed at that weight, not the bottom of the range.
+            earlier = next((x for x in reversed(sessions) if _same_weight(x.working_weight, back)), None)
+            back_targets = [max(low, min(r, high)) for r in earlier.reps][:n_sets] if earlier else []
+            back_targets += [back_targets[-1] if back_targets else low] * (n_sets - len(back_targets))
             return Prescription(
                 "drop-back",
                 back,
-                tuple([low] * n_sets),
+                tuple(back_targets),
                 f"Below {low} reps two sessions running at {unit_change(weight)}. Drop back to {unit_change(back)} and rebuild.",
                 short=f"Under {low} reps twice — drop back",
             )
@@ -759,18 +771,28 @@ def classify_status(sessions: list[Session], scores: list[float], as_of: date, l
     return "Holding", "Within ±2% of recent sessions"
 
 
-def _reconcile_status(status: str, reason: str, rx: Prescription, last: Session) -> tuple[str, str]:
-    """Keep the status consistent with the advice.
+def _reconcile_status(status: str, reason: str, rx: Prescription, sessions: list[Session]) -> tuple[str, str]:
+    """Keep the status consistent with the advice and with double progression.
 
-    The trend score is an Epley estimate, so a heavier weight with collapsing
-    reps can read as "progress" while the advice is to drop back or deload.
+    The trend score is an Epley estimate, which misreads double progression in
+    both directions: a heavier weight with collapsing reps can look like
+    progress, and moving up then rebuilding reps can look like a stall.
     """
-    if status not in ("Progressing", "Holding"):
+    last = sessions[-1]
+    weight = _fmt_weight(last.working_weight)
+    if rx.action == "drop-back" and status in ("Progressing", "Holding"):
+        return "Regressing", f"Reps falling at {weight} lb"
+    if rx.action == "deload" and status in ("Progressing", "Holding"):
+        return "Stalled", f"No rep gains in 3 sessions at {weight} lb"
+    if rx.action not in ("add-reps", "hold") or status not in ("Stalled", "Holding", "Regressing"):
         return status, reason
-    if rx.action == "drop-back":
-        return "Regressing", f"Reps falling at {_fmt_weight(last.working_weight)} lb"
-    if rx.action == "deload":
-        return "Stalled", f"No rep gains in 3 sessions at {_fmt_weight(last.working_weight)} lb"
+    run = _trailing_run(sessions)
+    if len(run) >= 2 and _avg(run[-1].reps) > _avg(run[-2].reps):
+        return "Progressing", f"Reps up at {weight} lb"
+    before = sessions[-len(run) - 1] if len(sessions) > len(run) else None
+    moved_up = before is not None and _harder(last.working_weight, before.working_weight, last.assisted)
+    if moved_up and len(run) <= 2 and status != "Holding":
+        return "Holding", f"Moved up to {weight} lb — building reps"
     return status, reason
 
 
@@ -805,7 +827,7 @@ def analyze_exercise(
             reps_lost_per_10pct=own_cost if own_cost is not None else global_reps_lost_per_10pct,
         )
         prescription = with_targets(prescription, sessions[-1], kind, rep_range, ladder, increment)
-        status, status_reason = _reconcile_status(status, status_reason, prescription, sessions[-1])
+        status, status_reason = _reconcile_status(status, status_reason, prescription, sessions)
     return ExerciseAnalysis(
         name=name,
         kind=kind,
@@ -961,7 +983,7 @@ MUSCLE_RULES: tuple[tuple[str, str], ...] = (
 )
 
 # Approximate weekly hard-set guidelines (low end of productive range, high end of
-# the adaptive range), loosely following RP's published volume landmarks.
+# the adaptive range), loosely following commonly published hypertrophy volume guidelines.
 VOLUME_TARGETS: dict[str, tuple[int, int]] = {
     "Chest": (10, 20),
     "Back": (10, 22),
