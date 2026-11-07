@@ -152,6 +152,9 @@ def _print_next_workout(connection: sqlite3.Connection, args: argparse.Namespace
             continue
         print(f"\n  {name}  [{analysis.status}]")
         print(f"    Next: {rx.describe()}")
+        if any(not working for _, _, working in rx.plan):
+            sets = ", ".join(f"{w:g}×{r}" + ("" if working else " (as last time)") for w, r, working in rx.plan)
+            print(f"    Sets: {sets}")
         print(f"    Why:  {rx.reason}")
         print(f"    Effort: {rx.effort}")
         print(f"    Next step: {rx.goal}")

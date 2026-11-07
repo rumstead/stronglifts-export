@@ -94,6 +94,8 @@ def _exercise_payload(analysis: ExerciseAnalysis) -> dict[str, object]:
                 "reason": p.reason,
                 "short": p.short or p.reason,
                 "effort": p.effort,
+                "plan": [[w, r, working] for w, r, working in p.plan]
+                or [[p.weight, r, True] for r in p.target_reps],
                 "goal": p.goal,
             }
             if p
@@ -159,6 +161,8 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
     .sets-grid .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
     .sets-grid .tgt { font-size: 17px; font-weight: 700; }
+    .sets-grid .tgt.off { font-size: 14px; font-weight: 600; color: var(--muted); }
+    .sets-grid .note { font-size: 10px; font-weight: 500; color: var(--muted); }
     .sets-grid .delta { font-size: 11px; font-weight: 600; color: var(--accent); }
     .sets-grid .prev { font-size: 12px; color: var(--muted); }
     .facts { font-size: 13px; display: grid; grid-template-columns: 64px 1fr; gap: 3px 8px; }
@@ -344,7 +348,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       const rx = el('div', 'rx');
       const sameWeight = p.weight === last.weight;
       rx.appendChild(el('span', sameWeight ? '' : 'up', p.weight === 0 ? 'Bodyweight' : fmt(p.weight) + ' lb'));
-      rx.appendChild(el('span', 'sets-count', ' · ' + p.targets.length + ' sets'));
+      rx.appendChild(el('span', 'sets-count', ' · ' + p.plan.length + ' sets'));
       wrap.appendChild(rx);
       wrap.appendChild(el('div', 'cue', p.short));
       wrap.appendChild(setGrid(p, last));
@@ -360,25 +364,32 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
       return wrap;
     }
 
-    // Per-set targets with last session's reps underneath, so each set has a number to beat.
+    // Per-set plan in the order you do your sets, with last session's set underneath.
+    // Off-weight sets (a lighter lead-in, a heavier top set) show their own weight and repeat last time.
     function setGrid(p, last) {
-      // Last session's sets in order (warm-ups and drop sets left out), including any off-weight top set.
       const prevSets = last.sets.filter(s => s[3] !== 'warmup' && s[3] !== 'dropset');
       const grid = el('div', 'sets-grid');
-      grid.style.gridTemplateColumns = '48px repeat(' + p.targets.length + ', 1fr)';
+      grid.style.gridTemplateColumns = '48px repeat(' + p.plan.length + ', 1fr)';
       grid.appendChild(el('div', 'k', ''));
-      p.targets.forEach((_, i) => grid.appendChild(el('div', 'k', 'Set ' + (i + 1))));
+      p.plan.forEach((_, i) => grid.appendChild(el('div', 'k', 'Set ' + (i + 1))));
       grid.appendChild(el('div', 'k', 'Target'));
-      p.targets.forEach((r, i) => {
+      p.plan.forEach((set, i) => {
+        const [w, r, working] = set;
         const prev = prevSets[i];
+        if (!working) {
+          const cell = el('div', 'tgt off', fmt(w) + '×' + r);
+          cell.appendChild(el('div', 'note', 'as last time'));
+          grid.appendChild(cell);
+          return;
+        }
         const cell = el('div', 'tgt', String(r));
-        if (prev && prev[0] === p.weight && r > prev[1]) cell.appendChild(el('span', 'delta', ' +' + (r - prev[1])));
+        if (prev && prev[0] === w && r > prev[1]) cell.appendChild(el('span', 'delta', ' +' + (r - prev[1])));
         grid.appendChild(cell);
       });
       grid.appendChild(el('div', 'k', 'Last'));
-      p.targets.forEach((_, i) => {
+      p.plan.forEach((set, i) => {
         const prev = prevSets[i];
-        const text = !prev ? '–' : (prev[0] === p.weight ? String(prev[1]) : fmt(prev[0]) + '×' + prev[1]) +
+        const text = !prev ? '–' : (prev[0] === set[0] ? String(prev[1]) : fmt(prev[0]) + '×' + prev[1]) +
           (prev[2] !== null ? ' @' + prev[2] : '');
         grid.appendChild(el('div', 'prev', text));
       });
