@@ -484,3 +484,32 @@ def test_building_reps_after_moving_up_is_not_a_stall() -> None:
     flat = _moved_up_history() + [_session(21, [(100, 7), (100, 6), (100, 5)]), _session(24, [(100, 7), (100, 6), (100, 5)])]
     hold = Prescription("hold", 100, (7, 6, 6), "r")
     assert _reconcile_status("Stalled", "x", hold, flat) == ("Holding", "Moved up to 100 lb — building reps")
+
+
+# ---- off-weight sets (lead-in / top set) ----
+
+def test_lead_in_set_is_kept_and_total_matches_usual_set_count() -> None:
+    sessions = [_session(d * 3, [(33, 10), (33, 9), (33, 9)]) for d in range(3)]
+    sessions.append(_session(9, [(22, 11, 8.0, "normal"), (33, 10, 8.5, "normal"), (33, 9, 9.5, "normal")]))
+    rx = _analyze("Cable Fly Crossovers", sessions).prescription
+    assert len(rx.plan) == 3
+    assert rx.plan[0] == (22, 11, False)
+    assert [w for w, _, working in rx.plan if working] == [33, 33]
+    assert rx.target_reps == (10, 10)
+
+
+def test_assisted_top_set_is_kept_in_place() -> None:
+    sessions = [
+        _session(0, [(27, 7), (27, 6), (27, 5)], assisted=True),
+        _session(3, [(27, 7), (27, 7), (27, 6)], assisted=True),
+        _session(6, [(15, 6), (27, 8), (27, 6)], assisted=True),
+    ]
+    rx = _analyze("Pull Up (Assisted)", sessions).prescription
+    assert rx.plan == ((15, 6, False), (27, 8, True), (27, 7, True))
+
+
+def test_new_high_rep_exercise_gets_its_own_range() -> None:
+    sessions = [_session(0, [(33, 23), (61, 17), (61, 12)])]
+    rep_range = _analyze("Wrist Roller", sessions).rep_range
+    assert rep_range.source == "history"
+    assert rep_range.high >= 15

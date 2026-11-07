@@ -184,6 +184,10 @@ class Prescription:
     short: str = ""  # one-line cue for compact views
     effort: str = ""  # target effort, e.g. "RPE 9–9.5 · about 1 rep left on the last set"
     goal: str = ""  # what earns the next weight change
+    # Every set in session order: (weight, reps, is_working). Off-weight sets the
+    # lifter does around the working sets (a lighter lead-in, a heavier top set)
+    # are kept as last time; only working sets carry progression targets.
+    plan: tuple[tuple[float, int, bool], ...] = ()
 
     @property
     def sets(self) -> int:
@@ -336,7 +340,11 @@ def infer_rep_range(sessions: list[Session], assisted: bool) -> RepRange:
         raw_high = float(median(tops))
         raw_low = float(median(bottoms))
     elif len(recent) < 4:
-        return RepRange(8, 12, "default")
+        reps = sorted(r for x in recent for r in x.reps)
+        if not reps or (reps[0] >= 6 and reps[-1] <= 12):
+            return RepRange(8, 12, "default")
+        # A new exercise done well outside 8-12 (e.g. 15-20 rep wrist work): use what was done.
+        raw_low, raw_high = float(reps[0]), float(reps[-1])
     else:
         reps = sorted(r for s in recent[-10:] for r in s.reps)
         raw_low = float(reps[int(0.2 * (len(reps) - 1))])
@@ -477,7 +485,50 @@ def prescribe(
         fill = targets[-1]
     while len(targets) < n_sets:
         targets.append(max(1, fill))
-    return replace(rx, target_reps=tuple(targets))
+    plan = list(_session_plan(sessions[-1], rx.weight, targets, rx.action))
+    # Match the number of sets you usually do in total, lead-in and top sets included.
+    total = _hard_set_count(sessions)
+    while len(plan) > total and sum(1 for x in plan if x[2]) > 1:
+        last_working = max(i for i, x in enumerate(plan) if x[2])
+        plan.pop(last_working)
+    targets = [r for _, r, working in plan if working]
+    return replace(rx, target_reps=tuple(targets), plan=tuple(plan))
+
+
+def _hard_set_count(sessions: list[Session]) -> int:
+    """Most common number of sets (warm-ups and drop sets excluded) in the last 3 sessions."""
+    counts = Counter(
+        sum(1 for x in s.sets if x.set_type not in NON_WORKING_SET_TYPES and x.reps > 0) for s in sessions[-3:]
+    )
+    return max(1, max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0])
+
+
+def _session_plan(
+    last: Session, weight: float, targets: list[int], action: str
+) -> tuple[tuple[float, int, bool], ...]:
+    """Lay the working targets out in the order the lifter does their sets.
+
+    Sets at another weight stay where they were and repeat last time, as long as
+    they keep the same relation to the working weight (a lighter lead-in stays
+    lighter). A harder top set is skipped while easing back in or deloading.
+    """
+    hard = [x for x in last.sets if x.set_type not in NON_WORKING_SET_TYPES and x.reps > 0]
+    working_ids = {id(x) for x in last.working_sets}
+    remaining = list(targets)
+    plan: list[tuple[float, int, bool]] = []
+    for x in hard:
+        if id(x) in working_ids:
+            if remaining:
+                plan.append((weight, remaining.pop(0), True))
+            continue
+        was_harder = _harder(x.weight, last.working_weight, last.assisted)
+        if was_harder != _harder(x.weight, weight, last.assisted) or _same_weight(x.weight, weight):
+            continue
+        if was_harder and action in ("return", "deload"):
+            continue
+        plan.append((x.weight, x.reps, False))
+    plan.extend((weight, r, True) for r in remaining)
+    return tuple(plan)
 
 
 def _prescribe(
@@ -643,7 +694,7 @@ def with_targets(
         else:
             goal = f"{low}+ every set still counts · {move} again at {high}×{n}"
     else:
-        goal = f"Hit {high} on all {n} sets → {w(next_up)} lb"
+        goal = f"Hit {high} on every {w(rx.weight)} lb set → {w(next_up)} lb"
     return replace(rx, effort=EFFORT_BY_ACTION.get(rx.action, ""), goal=goal)
 
 
