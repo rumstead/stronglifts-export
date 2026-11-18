@@ -131,3 +131,63 @@ def test_dry_run_accepts_hevy_without_side_effects(tmp_path: Path, monkeypatch) 
     assert not (tmp_path / "downloads").exists()
     assert connection.execute("SELECT COUNT(*) FROM sets").fetchone()[0] == 0
     assert connection.execute("SELECT COUNT(*) FROM email_imports").fetchone()[0] == 0
+
+
+class _RecordingImap(_FakeImap):
+    """Tracks the flags and copies the job applies, as a real mailbox would."""
+
+    instances: list["_RecordingImap"] = []
+
+    def __init__(self, host: str, port: int, copy_status: str = "OK") -> None:
+        super().__init__(host, port)
+        self.flags: set[str] = set()
+        self.copied_with_flags: list[set[str]] = []
+        self._copy_status = copy_status
+        _RecordingImap.instances.append(self)
+
+    def copy(self, _raw_msg_id: bytes, _destination_mailbox: str):
+        if self._copy_status != "OK":
+            return self._copy_status, [b""]
+        self.copied_with_flags.append(set(self.flags))
+        return "OK", [b""]
+
+    def store(self, _raw_msg_id: bytes, flags_op: str, flags: str):
+        names = set(flags.strip("()").split())
+        if flags_op == "+FLAGS":
+            self.flags |= names
+        elif flags_op == "-FLAGS":
+            self.flags -= names
+        return "OK", [b""]
+
+
+class _FailingCopyImap(_RecordingImap):
+    def __init__(self, host: str, port: int) -> None:
+        super().__init__(host, port, copy_status="NO")
+
+
+def test_processed_message_is_marked_read(tmp_path: Path, monkeypatch) -> None:
+    connection = connect(str(tmp_path / "lifts.db"))
+    init_db(connection)
+    _RecordingImap.instances.clear()
+    monkeypatch.setattr(email_ingest_module.imaplib, "IMAP4_SSL", _RecordingImap)
+
+    result = ingest_from_gmail(connection, _config(tmp_path / "downloads", dry_run=False))
+
+    imap = _RecordingImap.instances[-1]
+    assert result.messages_moved == 1
+    assert "\\Seen" in imap.flags
+    assert imap.copied_with_flags == [{"\\Seen"}]
+
+
+def test_failed_move_leaves_message_unread_for_retry(tmp_path: Path, monkeypatch) -> None:
+    connection = connect(str(tmp_path / "lifts.db"))
+    init_db(connection)
+    _RecordingImap.instances.clear()
+    monkeypatch.setattr(email_ingest_module.imaplib, "IMAP4_SSL", _FailingCopyImap)
+
+    result = ingest_from_gmail(connection, _config(tmp_path / "downloads", dry_run=False))
+
+    imap = _RecordingImap.instances[-1]
+    assert result.messages_moved == 0
+    assert "\\Seen" not in imap.flags
+    assert "\\Deleted" not in imap.flags

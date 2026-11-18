@@ -149,8 +149,13 @@ def _extract_attachments(message: Message) -> list[tuple[str, str, bytes]]:
 
 
 def _move_message(imap: imaplib.IMAP4_SSL, raw_msg_id: bytes, destination_mailbox: str) -> bool:
+    # The fetch uses BODY.PEEK, so mark the message read here. Setting \Seen
+    # before the copy means the copy in the destination mailbox is read too.
+    imap.store(raw_msg_id, "+FLAGS", "\\Seen")
     copy_status, _ = imap.copy(raw_msg_id, destination_mailbox)
     if copy_status != "OK":
+        # Leave it unread so the next run's UNSEEN search retries it.
+        imap.store(raw_msg_id, "-FLAGS", "\\Seen")
         return False
     store_status, _ = imap.store(raw_msg_id, "+FLAGS", "\\Deleted")
     return store_status == "OK"
