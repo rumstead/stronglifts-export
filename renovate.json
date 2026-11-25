@@ -2,5 +2,14 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "matchFileNames": ["requirements.txt", "**/requirements.txt", "pyproject.toml", "**/pyproject.toml"],
+      "groupName": "Python dependencies",
+      "separateMajorMinor": false,
+      "separateMultipleMajor": false,
+      "separateMinorPatch": false
+    }
   ]
 }
